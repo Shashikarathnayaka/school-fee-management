@@ -1,0 +1,161 @@
+### N&D Smart SchoolPay API Requests
+
+@baseUrl = http://localhost:3000
+
+# ==========================================
+# AUTHENTICATION
+# ==========================================
+
+### Register Parent
+# @name registerParent
+POST {{baseUrl}}/auth/register/parent
+Content-Type: application/json
+
+{
+  "name": "Jane Doe",
+  "email": "jane@example.com",
+  "phone": "1234567890",
+  "password": "password123"
+}
+
+### Login Parent
+# @name loginParent
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "jane@example.com",
+  "password": "password123"
+}
+
+@parentToken = {{loginParent.response.body.token}}
+
+### Register Driver
+# @name registerDriver
+POST {{baseUrl}}/auth/register/driver
+Content-Type: application/json
+
+{
+  "name": "Alex Driver",
+  "email": "alex@example.com",
+  "phone": "0987654321",
+  "password": "password123",
+  "van_number": "VAN-999",
+  "license_no": "LIC-111"
+}
+
+### Login Driver
+# @name loginDriver
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "alex@example.com",
+  "password": "password123"
+}
+
+@driverToken = {{loginDriver.response.body.token}}
+
+# ==========================================
+# PARENT ENDPOINTS
+# ==========================================
+
+### Get Parent Profile
+GET {{baseUrl}}/parent/profile
+Authorization: Bearer {{parentToken}}
+
+### Add Student (Child)
+# @name addStudent
+POST {{baseUrl}}/parent/students
+Content-Type: application/json
+Authorization: Bearer {{parentToken}}
+
+{
+  "name": "Little Jane",
+  "grade": "1",
+  "section": "A",
+  "school_name": "Springfield Elementary",
+  "pickup_location": "123 Main St"
+}
+
+@studentId = {{addStudent.response.body.student.id}}
+@studentCode = {{addStudent.response.body.student.student_code}}
+
+### Get Parent's Students
+GET {{baseUrl}}/parent/students
+Authorization: Bearer {{parentToken}}
+
+### Get Specific Student
+GET {{baseUrl}}/parent/students/{{studentId}}
+Authorization: Bearer {{parentToken}}
+
+### Get Student's Pickup Status Today
+GET {{baseUrl}}/parent/students/{{studentId}}/pickup-status
+Authorization: Bearer {{parentToken}}
+
+### Get Parent Fees
+GET {{baseUrl}}/parent/fees
+Authorization: Bearer {{parentToken}}
+
+### Get Parent Notifications
+GET {{baseUrl}}/parent/notifications
+Authorization: Bearer {{parentToken}}
+
+
+# ==========================================
+# DRIVER ENDPOINTS
+# ==========================================
+
+### Get Driver Profile
+GET {{baseUrl}}/driver/profile
+Authorization: Bearer {{driverToken}}
+
+### Toggle Duty Status
+PATCH {{baseUrl}}/driver/status
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "is_on_duty": true
+}
+
+### Create Route
+# @name createRoute
+POST {{baseUrl}}/driver/routes
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "name": "Evening Dropoff",
+  "start_time": "14:30",
+  "end_time": "16:00"
+}
+
+@routeId = {{createRoute.response.body.route.id}}
+
+### Add Student to Route (using Student Code)
+POST {{baseUrl}}/driver/routes/{{routeId}}/students
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "student_code": "{{studentCode}}"
+}
+
+### Get Today's Routes
+GET {{baseUrl}}/driver/routes/today
+Authorization: Bearer {{driverToken}}
+
+### Update Pickup Status
+PATCH {{baseUrl}}/driver/pickup/{{studentId}}
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "status": "PICKED_UP",
+  "routeId": "{{routeId}}"
+}
+
+### Remove Student from Route
+DELETE {{baseUrl}}/driver/routes/{{routeId}}/students/{{studentId}}
+Authorization: Bearer {{driverToken}}

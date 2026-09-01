@@ -1,0 +1,144 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(uuid())
+  name          String
+  email         String         @unique
+  phone         String?
+  password_hash String
+  role          Role           @default(PARENT)
+  created_at    DateTime       @default(now())
+  updated_at    DateTime       @updatedAt
+  driver        Driver?
+  students      Student[]
+  notifications Notification[]
+
+  @@map("users")
+}
+
+enum Role {
+  PARENT
+  DRIVER
+}
+
+model Driver {
+  user_id    String  @id
+  user       User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  van_number String
+  license_no String
+  is_on_duty Boolean @default(false)
+  routes     Route[]
+
+  @@map("drivers")
+}
+
+model Student {
+  id              String         @id @default(uuid())
+  parent_id       String
+  parent          User           @relation(fields: [parent_id], references: [id], onDelete: Cascade)
+  name            String
+  grade           String?
+  section         String?
+  school_name     String?
+  pickup_location String?
+  student_code    String         @unique
+  created_at      DateTime       @default(now())
+  routes          RouteStudent[]
+  pickup_status   PickupStatus[]
+  fees            Fee[]
+
+  @@index([student_code])
+  @@map("students")
+}
+
+model Route {
+  id         String         @id @default(uuid())
+  driver_id  String
+  driver     Driver         @relation(fields: [driver_id], references: [user_id], onDelete: Cascade)
+  name       String
+  start_time String?
+  end_time   String?
+  status     RouteStatus    @default(SCHEDULED)
+  created_at DateTime       @default(now())
+  students   RouteStudent[]
+  pickups    PickupStatus[]
+
+  @@map("routes")
+}
+
+enum RouteStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+}
+
+model RouteStudent {
+  id             String   @id @default(uuid())
+  route_id       String
+  route          Route    @relation(fields: [route_id], references: [id], onDelete: Cascade)
+  student_id     String
+  student        Student  @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  pickup_order   Int?
+  scheduled_time String?
+  created_at     DateTime @default(now())
+
+  // Ensure a student isn't added to the same route twice
+  @@unique([route_id, student_id])
+  @@map("route_students")
+}
+
+model PickupStatus {
+  id         String   @id @default(uuid())
+  route_id   String
+  route      Route    @relation(fields: [route_id], references: [id], onDelete: Cascade)
+  student_id String
+  student    Student  @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  date       DateTime @db.Date
+  status     PStatus  @default(PENDING)
+  updated_at DateTime @updatedAt
+
+  @@unique([route_id, student_id, date])
+  @@map("pickup_status")
+}
+
+enum PStatus {
+  PENDING
+  PICKED_UP
+  ABSENT
+}
+
+model Fee {
+  id         String    @id @default(uuid())
+  student_id String
+  student    Student   @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  amount     Decimal   @db.Decimal(10, 2)
+  due_date   DateTime
+  status     FeeStatus @default(DUE)
+  paid_date  DateTime?
+
+  @@map("fees")
+}
+
+enum FeeStatus {
+  DUE
+  PAID
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  title      String
+  body       String
+  is_read    Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  @@map("notifications")
+}

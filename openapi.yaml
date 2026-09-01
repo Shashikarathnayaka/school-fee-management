@@ -1,0 +1,401 @@
+openapi: 3.0.0
+info:
+  title: N&D Smart SchoolPay API
+  description: Backend API for the N&D Smart SchoolPay application, managing parents, drivers, students, routes, and fees.
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000
+    description: Local Development Environment
+  - url: https://api.schoolpay.example.com
+    description: Production Environment
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [PARENT, DRIVER]
+    Student:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        grade:
+          type: string
+          nullable: true
+        section:
+          type: string
+          nullable: true
+        school_name:
+          type: string
+          nullable: true
+        pickup_location:
+          type: string
+          nullable: true
+        student_code:
+          type: string
+    Route:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        start_time:
+          type: string
+          nullable: true
+        end_time:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [SCHEDULED, ACTIVE, COMPLETED]
+
+paths:
+  /auth/register/parent:
+    post:
+      summary: Register a Parent
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                password:
+                  type: string
+                  minLength: 6
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/User'
+        '409':
+          description: Email already in use
+
+  /auth/register/driver:
+    post:
+      summary: Register a Driver
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, van_number, license_no]
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                password:
+                  type: string
+                van_number:
+                  type: string
+                license_no:
+                  type: string
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/User'
+
+  /auth/login:
+    post:
+      summary: Login User
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: Invalid credentials
+
+  /parent/profile:
+    get:
+      summary: Get Parent Profile
+      tags: [Parent]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+    patch:
+      summary: Update Parent Profile
+      tags: [Parent]
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                phone:
+                  type: string
+      responses:
+        '200':
+          description: Success
+
+  /parent/students:
+    get:
+      summary: List Parent's Children
+      tags: [Parent]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  students:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Student'
+    post:
+      summary: Add a Child
+      tags: [Parent]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                grade:
+                  type: string
+                section:
+                  type: string
+                school_name:
+                  type: string
+                pickup_location:
+                  type: string
+      responses:
+        '201':
+          description: Created
+
+  /parent/students/{id}/pickup-status:
+    get:
+      summary: Get Child's Pickup Status
+      tags: [Parent]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: date
+          schema:
+            type: string
+            format: date
+          description: Defaults to today
+      responses:
+        '200':
+          description: Success
+
+  /parent/fees:
+    get:
+      summary: Get All Fees
+      tags: [Parent]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+
+  /parent/fees/{feeId}/pay:
+    patch:
+      summary: Pay a Fee
+      tags: [Parent]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: feeId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success
+
+  /driver/routes:
+    post:
+      summary: Create Route
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                start_time:
+                  type: string
+                end_time:
+                  type: string
+      responses:
+        '201':
+          description: Created
+
+  /driver/routes/today:
+    get:
+      summary: Get Today's Routes
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+
+  /driver/routes/{routeId}/students:
+    post:
+      summary: Add Student to Route
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [student_code]
+              properties:
+                student_code:
+                  type: string
+      responses:
+        '201':
+          description: Created
+        '404':
+          description: Student code not found
+        '409':
+          description: Student already in active route
+
+  /driver/pickup/{studentId}:
+    patch:
+      summary: Update Pickup Status
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: studentId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, routeId]
+              properties:
+                status:
+                  type: string
+                  enum: [PICKED_UP, ABSENT, PENDING]
+                routeId:
+                  type: string
+      responses:
+        '200':
+          description: Success
