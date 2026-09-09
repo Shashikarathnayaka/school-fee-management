@@ -64,6 +64,16 @@ Content-Type: application/json
 GET {{baseUrl}}/parent/profile
 Authorization: Bearer {{parentToken}}
 
+### Become Driver (Upgrade Account)
+PATCH {{baseUrl}}/parent/become-driver
+Content-Type: application/json
+Authorization: Bearer {{parentToken}}
+
+{
+  "van_number": "VAN-555",
+  "license_no": "LIC-777"
+}
+
 ### Add Student (Child)
 # @name addStudent
 POST {{baseUrl}}/parent/students

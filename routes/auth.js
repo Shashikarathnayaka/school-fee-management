@@ -47,8 +47,9 @@ router.post('/register/parent', async (req, res) => {
     }
   });
 
-  const token = generateToken({ userId: user.id, role: user.role });
-  res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  const roles = ['PARENT'];
+  const token = generateToken({ userId: user.id, roles, role: user.role });
+  res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, roles } });
 });
 
 router.post('/register/driver', async (req, res) => {
@@ -80,7 +81,8 @@ router.post('/register/driver', async (req, res) => {
     }
   });
 
-  const token = generateToken({ userId: user.id, role: user.role });
+  const roles = ['DRIVER'];
+  const token = generateToken({ userId: user.id, roles, role: user.role });
   res.status(201).json({ 
     token, 
     user: { 
@@ -88,6 +90,7 @@ router.post('/register/driver', async (req, res) => {
       name: user.name, 
       email: user.email, 
       role: user.role,
+      roles,
       driver: user.driver
     } 
   });
@@ -106,7 +109,8 @@ router.post('/login', async (req, res) => {
     return res.status(401).json({ error: { message: 'Invalid credentials', code: 'INVALID_CREDENTIALS' } });
   }
 
-  const token = generateToken({ userId: user.id, role: user.role });
+  const roles = Array.from(new Set([user.role, ...(user.driver ? ['DRIVER'] : [])]));
+  const token = generateToken({ userId: user.id, roles, role: user.role });
   res.status(200).json({ 
     token, 
     user: { 
@@ -114,6 +118,7 @@ router.post('/login', async (req, res) => {
       name: user.name, 
       email: user.email, 
       role: user.role,
+      roles,
       driver: user.driver || undefined
     } 
   });

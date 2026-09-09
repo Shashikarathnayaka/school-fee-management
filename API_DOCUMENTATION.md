@@ -109,9 +109,22 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 #### 1. Get Parent Profile
 - **Method**: `GET`
 - **Endpoint**: `/parent/profile`
-- **Success Response (200 OK)**: Returns the parent's profile details.
+- **Success Response (200 OK)**: Returns the parent's profile details including `has_driver_profile: boolean`.
 
-#### 2. Update Parent Profile
+#### 2. Become Driver (Upgrade Account)
+- **Method**: `PATCH`
+- **Endpoint**: `/parent/become-driver`
+- **Body**:
+  ```json
+  {
+    "van_number": "VAN-123",
+    "license_no": "LIC-456"
+  }
+  ```
+- **Success Response (200 OK)**: Returns new JWT token with updated `roles: ["PARENT", "DRIVER"]` and user info.
+- **Error Response (409 Conflict)**: If driver profile already exists for user (`code: "DRIVER_PROFILE_EXISTS"`).
+
+#### 3. Update Parent Profile
 - **Method**: `PATCH`
 - **Endpoint**: `/parent/profile`
 - **Body** (All fields optional):

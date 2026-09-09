@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
+const { generateToken } = require('../utils/auth');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -169,11 +170,69 @@ router.patch('/notifications/:id/read', async (req, res) => {
 
 // GET /parent/profile
 router.get('/profile', async (req, res) => {
-  const profile = await prisma.user.findUnique({
+  const user = await prisma.user.findUnique({
     where: { id: req.user.id },
-    select: { id: true, name: true, email: true, phone: true, created_at: true }
+    select: { id: true, name: true, email: true, phone: true, created_at: true, driver: true }
   });
+  if (!user) {
+    return res.status(404).json({ error: { message: 'User not found', code: 'NOT_FOUND' } });
+  }
+  const profile = {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    created_at: user.created_at,
+    has_driver_profile: !!user.driver
+  };
   res.json({ profile });
+});
+
+// PATCH /parent/become-driver
+const becomeDriverSchema = z.object({
+  van_number: z.string().min(1),
+  license_no: z.string().min(1)
+});
+
+router.patch('/become-driver', async (req, res) => {
+  const { van_number, license_no } = becomeDriverSchema.parse(req.body);
+
+  const existingDriver = await prisma.driver.findUnique({
+    where: { user_id: req.user.id }
+  });
+
+  if (existingDriver) {
+    return res.status(409).json({
+      error: { message: 'Driver profile already exists', code: 'DRIVER_PROFILE_EXISTS' }
+    });
+  }
+
+  await prisma.driver.create({
+    data: {
+      user_id: req.user.id,
+      van_number,
+      license_no,
+      is_on_duty: false
+    }
+  });
+
+  const user = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    include: { driver: true }
+  });
+
+  const roles = Array.from(new Set([user.role, 'DRIVER', ...(user.driver ? ['DRIVER'] : [])]));
+  const token = generateToken({ userId: user.id, roles, role: user.role });
+
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      roles
+    }
+  });
 });
 
 // PATCH /parent/profile
