@@ -359,10 +359,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [student_code]
+              required: [student_code, monthly_fee]
               properties:
                 student_code:
                   type: string
+                monthly_fee:
+                  type: number
+                  example: 150.00
       responses:
         '201':
           description: Created

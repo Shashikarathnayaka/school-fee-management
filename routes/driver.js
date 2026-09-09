@@ -64,9 +64,14 @@ router.patch('/status', async (req, res) => {
 });
 
 // POST /driver/routes/:routeId/students
+const addStudentToRouteSchema = z.object({
+  student_code: z.string(),
+  monthly_fee: z.number().positive()
+});
+
 router.post('/routes/:routeId/students', async (req, res) => {
   const { routeId } = req.params;
-  const { student_code } = z.object({ student_code: z.string() }).parse(req.body);
+  const { student_code, monthly_fee } = addStudentToRouteSchema.parse(req.body);
 
   // Verify driver owns the route
   const route = await prisma.route.findFirst({ where: { id: routeId, driver_id: req.user.id } });
@@ -103,7 +108,8 @@ router.post('/routes/:routeId/students', async (req, res) => {
     data: {
       route_id: routeId,
       student_id: student.id,
-      pickup_order
+      pickup_order,
+      monthly_fee
     },
     include: { student: true }
   });

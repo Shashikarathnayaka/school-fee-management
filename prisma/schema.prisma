@@ -87,6 +87,7 @@ model RouteStudent {
   student        Student  @relation(fields: [student_id], references: [id], onDelete: Cascade)
   pickup_order   Int?
   scheduled_time String?
+  monthly_fee    Decimal  @default(0) @db.Decimal(10, 2)
   created_at     DateTime @default(now())
 
   // Ensure a student isn't added to the same route twice

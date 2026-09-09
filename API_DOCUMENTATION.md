@@ -245,7 +245,8 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Body**:
   ```json
   {
-    "student_code": "STU-12345"
+    "student_code": "STU-12345",
+    "monthly_fee": 150.00
   }
   ```
 

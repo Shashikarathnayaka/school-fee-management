@@ -149,7 +149,8 @@ Content-Type: application/json
 Authorization: Bearer {{driverToken}}
 
 {
-  "student_code": "{{studentCode}}"
+  "student_code": "{{studentCode}}",
+  "monthly_fee": 150.00
 }
 
 ### Get Today's Routes
