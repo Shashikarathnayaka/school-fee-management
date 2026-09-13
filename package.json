@@ -7,7 +7,7 @@
     "dev": "nodemon index.js",
     "migrate": "npx prisma migrate dev",
     "seed": "node prisma/seed.js",
-    "postinstall": "npx prisma generate"
+    "postinstall": "chmod +x node_modules/.bin/* 2>/dev/null; node node_modules/prisma/build/index.js generate"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
