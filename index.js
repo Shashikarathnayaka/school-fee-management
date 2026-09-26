@@ -6,6 +6,7 @@ const errorHandler = require('./middlewares/errorHandler');
 const authRoutes = require('./routes/auth');
 const parentRoutes = require('./routes/parent');
 const driverRoutes = require('./routes/driver');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 
@@ -17,6 +18,7 @@ app.use(express.json());
 app.use('/auth', authRoutes);
 app.use('/parent', parentRoutes);
 app.use('/driver', driverRoutes);
+app.use('/admin', adminRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

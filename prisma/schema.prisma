@@ -27,6 +27,12 @@ model User {
 enum Role {
   PARENT
   DRIVER
+  ADMIN
+}
+
+enum PickupMethod {
+  MANUAL
+  TICKET
 }
 
 model Driver {
@@ -97,14 +103,16 @@ model RouteStudent {
 }
 
 model PickupStatus {
-  id         String   @id @default(uuid())
-  route_id   String
-  route      Route    @relation(fields: [route_id], references: [id], onDelete: Cascade)
-  student_id String
-  student    Student  @relation(fields: [student_id], references: [id], onDelete: Cascade)
-  date       DateTime @db.Date
-  status     PStatus  @default(PENDING)
-  updated_at DateTime @updatedAt
+  id            String        @id @default(uuid())
+  route_id      String
+  route         Route         @relation(fields: [route_id], references: [id], onDelete: Cascade)
+  student_id    String
+  student       Student       @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  date          DateTime      @db.Date
+  status        PStatus       @default(PENDING)
+  pickup_method PickupMethod?
+  marked_by     String?
+  updated_at    DateTime      @updatedAt
 
   @@unique([route_id, student_id, date])
   @@map("pickup_status")

@@ -9,6 +9,7 @@ This document provides a comprehensive overview of the N&D Smart SchoolPay backe
 To run the API locally, you must create a `.env` file in the root directory.
 
 ### Environment Variables (`.env`)
+
 ```ini
 # The connection string for your PostgreSQL database
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/schoolpay?schema=public"
@@ -57,12 +58,15 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 ## 5. API Endpoints
 
 ### A. Authentication APIs
+
 *These endpoints do not require an Authorization header.*
 
 #### 1. Register a Parent
+
 - **Method**: `POST`
 - **Endpoint**: `/auth/register/parent`
 - **Body**:
+
   ```json
   {
     "name": "Jane Doe",
@@ -71,12 +75,15 @@ If an API request fails, the server responds with an appropriate HTTP status cod
     "phone": "1234567890"      // Optional
   }
   ```
+
 - **Success Response (201 Created)**: Returns the user object and a JWT token.
 
 #### 2. Register a Driver
+
 - **Method**: `POST`
 - **Endpoint**: `/auth/register/driver`
 - **Body**:
+
   ```json
   {
     "name": "Alex Driver",
@@ -87,47 +94,58 @@ If an API request fails, the server responds with an appropriate HTTP status cod
     "license_no": "LIC-111"
   }
   ```
+
 - **Success Response (201 Created)**: Returns the user object and a JWT token.
 
 #### 3. Login User
+
 - **Method**: `POST`
 - **Endpoint**: `/auth/login`
 - **Body**:
+
   ```json
   {
     "email": "jane@example.com",
     "password": "password123"
   }
   ```
+
 - **Success Response (200 OK)**: Returns the user object (with roles) and a JWT token.
 
 ---
 
 ### B. Parent APIs
+
 *These endpoints require an Authorization header containing a Parent's JWT token.*
 
 #### 1. Get Parent Profile
+
 - **Method**: `GET`
 - **Endpoint**: `/parent/profile`
 - **Success Response (200 OK)**: Returns the parent's profile details including `has_driver_profile: boolean`.
 
 #### 2. Become Driver (Upgrade Account)
+
 - **Method**: `PATCH`
 - **Endpoint**: `/parent/become-driver`
 - **Body**:
+
   ```json
   {
     "van_number": "VAN-123",
     "license_no": "LIC-456"
   }
   ```
+
 - **Success Response (200 OK)**: Returns new JWT token with updated `roles: ["PARENT", "DRIVER"]` and user info.
 - **Error Response (409 Conflict)**: If driver profile already exists for user (`code: "DRIVER_PROFILE_EXISTS"`).
 
 #### 3. Update Parent Profile
+
 - **Method**: `PATCH`
 - **Endpoint**: `/parent/profile`
 - **Body** (All fields optional):
+
   ```json
   {
     "name": "Jane Doe Updated",
@@ -136,15 +154,18 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 #### 3. List Children (Students)
+
 - **Method**: `GET`
 - **Endpoint**: `/parent/students`
 - **Success Response (200 OK)**: Returns an array of students linked to this parent.
 
 #### 4. Add a Child
+
 - **Method**: `POST`
 - **Endpoint**: `/parent/students`
 - **Description**: Adds a new child and automatically generates a unique 5-character `student_code` (e.g., `STU-X8K9Z`) which is returned in the response.
 - **Body**:
+
   ```json
   {
     "name": "Little Jane",
@@ -156,33 +177,39 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 #### 5. Get Specific Child Details
+
 - **Method**: `GET`
 - **Endpoint**: `/parent/students/:id`
 - **Parameters**: `:id` (The UUID of the student in the URL path).
 
 #### 6. Get Child's Pickup Status
+
 - **Method**: `GET`
 - **Endpoint**: `/parent/students/:id/pickup-status?date=YYYY-MM-DD`
-- **Parameters**: 
+- **Parameters**:
   - `:id` (Path): The UUID of the student.
   - `date` (Query, Optional): Format `YYYY-MM-DD`. If omitted, defaults to today.
 
 #### 7. Get All Fees
+
 - **Method**: `GET`
 - **Endpoint**: `/parent/fees`
 - **Success Response (200 OK)**: Returns all pending and paid fees for all children belonging to the parent.
 
 #### 8. Pay a Fee
+
 - **Method**: `PATCH`
 - **Endpoint**: `/parent/fees/:feeId/pay`
 - **Parameters**: `:feeId` (Path) - The UUID of the fee.
 - **Success Response (200 OK)**: Marks the fee status as `PAID`.
 
 #### 9. Get Parent Notifications
+
 - **Method**: `GET`
 - **Endpoint**: `/parent/notifications`
 
 #### 10. Read Notification
+
 - **Method**: `PATCH`
 - **Endpoint**: `/parent/notifications/:id/read`
 - **Parameters**: `:id` (Path) - The UUID of the notification.
@@ -190,17 +217,21 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 ---
 
 ### C. Driver APIs
+
 *These endpoints require an Authorization header containing a Driver's JWT token.*
 
 #### 1. Get Driver Profile
+
 - **Method**: `GET`
 - **Endpoint**: `/driver/profile`
 - **Success Response (200 OK)**: Returns the driver's profile details.
 
 #### 2. Update Driver Profile
+
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/profile`
 - **Body** (All fields optional):
+
   ```json
   {
     "name": "Alex Driver",
@@ -211,9 +242,11 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 #### 3. Toggle Duty Status
+
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/status`
 - **Body**:
+
   ```json
   {
     "is_on_duty": true
@@ -221,9 +254,11 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 #### 4. Create Route
+
 - **Method**: `POST`
 - **Endpoint**: `/driver/routes`
 - **Body**:
+
   ```json
   {
     "name": "Evening Dropoff",
@@ -233,16 +268,19 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 #### 5. Get Today's Routes
+
 - **Method**: `GET`
 - **Endpoint**: `/driver/routes/today`
 - **Success Response (200 OK)**: Retrieves all routes assigned to the driver, including the list of students in each route and their pickup status for today.
 
 #### 6. Add Student to Route (Via Student Code)
+
 - **Method**: `POST`
 - **Endpoint**: `/driver/routes/:routeId/students`
 - **Parameters**: `:routeId` (Path) - The UUID of the route.
 - **Description**: Allows a driver to add a student to their route by providing the unique code given to them by the parent.
 - **Body**:
+
   ```json
   {
     "student_code": "STU-12345",
@@ -251,11 +289,13 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 #### 7. Update Pickup Status
+
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/pickup/:studentId`
 - **Parameters**: `:studentId` (Path) - The UUID of the student.
 - **Description**: Records or updates the student's pickup status for the current day on a specific route.
 - **Body**:
+
   ```json
   {
     "status": "PICKED_UP", // Must be one of: "PICKED_UP", "ABSENT", "PENDING"
@@ -264,17 +304,97 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 #### 8. Remove Student from Route
+
 - **Method**: `DELETE`
 - **Endpoint**: `/driver/routes/:routeId/students/:studentId`
-- **Parameters**: 
+- **Parameters**:
   - `:routeId` (Path) - The UUID of the route.
   - `:studentId` (Path) - The UUID of the student.
 
 #### 9. Get Driver Notifications
+
 - **Method**: `GET`
 - **Endpoint**: `/driver/notifications`
 
-#### 10. Read Notification
+#### 10. Read Driver Notification
+
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/notifications/:id/read`
 - **Parameters**: `:id` (Path) - The UUID of the notification.
+
+#### 11. Get Pickup History
+
+- **Method**: `GET`
+- **Endpoint**: `/driver/history?date=YYYY-MM-DD&route_id=&page=&limit=`
+- **Description**: Returns paginated pickup history for all routes belonging to the authenticated driver. Supports optional date and route filtering.
+- **Query Parameters**:
+  - `date` (Query, Optional): Format `YYYY-MM-DD`. Filters records by pickup date.
+  - `route_id` (Query, Optional): UUID of the route.
+  - `page` (Query, Optional): Page number (defaults to `1`).
+  - `limit` (Query, Optional): Number of items per page (defaults to `50`, max `200`).
+- **Success Response (200 OK)**:
+
+  ```json
+  {
+    "history": [
+      {
+        "id": "c1f7b845-82f2-47f4-aa91-9ca04e5030c8",
+        "date": "2026-09-25T00:00:00.000Z",
+        "status": "PICKED_UP",
+        "pickup_method": "MANUAL",
+        "updated_at": "2026-09-25T08:30:00.000Z",
+        "student": {
+          "id": "e5b8c3d2-a1f4-4b8c-9d3e-1f2a3b4c5d6e",
+          "name": "Little Jane",
+          "grade": "1",
+          "section": "A",
+          "pickup_location": "123 Main St"
+        },
+        "route": {
+          "id": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f8a",
+          "name": "Evening Dropoff"
+        }
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 50,
+      "total": 1
+    }
+  }
+  ```
+
+#### 12. Get Student Fee Payment Status
+
+- **Method**: `GET`
+- **Endpoint**: `/driver/students/:studentId/fees`
+- **Parameters**: `:studentId` (Path) - The UUID of the student.
+- **Description**: Returns all fee records for a specific student. The driver
+  must own a route the student is assigned to; otherwise `404` is returned.
+  This prevents drivers from viewing fee data for students outside their routes.
+- **Error Responses**:
+  - `400 Bad Request`: If `:studentId` is not a valid UUID (zod validation).
+  - `404 Not Found`: If the student is not assigned to any of the driver's routes
+    (`code: "NOT_FOUND"`).
+- **Success Response (200 OK)**:
+
+  ```json
+  {
+    "fees": [
+      {
+        "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "amount": "150.00",
+        "due_date": "2026-09-01T00:00:00.000Z",
+        "status": "PAID",
+        "paid_date": "2026-08-28T10:00:00.000Z"
+      },
+      {
+        "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+        "amount": "150.00",
+        "due_date": "2026-08-01T00:00:00.000Z",
+        "status": "DUE",
+        "paid_date": null
+      }
+    ]
+  }
+  ```

@@ -170,3 +170,11 @@ Authorization: Bearer {{driverToken}}
 ### Remove Student from Route
 DELETE {{baseUrl}}/driver/routes/{{routeId}}/students/{{studentId}}
 Authorization: Bearer {{driverToken}}
+
+### Get Pickup History
+GET {{baseUrl}}/driver/history?date=2026-09-25&page=1&limit=50
+Authorization: Bearer {{driverToken}}
+
+### Get Student Fee Payment Status
+GET {{baseUrl}}/driver/students/{{studentId}}/fees
+Authorization: Bearer {{driverToken}}
