@@ -8,6 +8,24 @@ async function main() {
   const salt = await bcrypt.genSalt(10);
   const passwordHash = await bcrypt.hash('password123', salt);
 
+  // 0. Create an Admin
+  const adminPassword = 'Admin@123';
+  const adminSalt = await bcrypt.genSalt(10);
+  const adminPasswordHash = await bcrypt.hash(adminPassword, adminSalt);
+
+  const admin = await prisma.user.upsert({
+    where: { email: 'admin@test.com' },
+    update: {},
+    create: {
+      name: 'Admin User',
+      email: 'admin@test.com',
+      password_hash: adminPasswordHash,
+      role: 'ADMIN',
+    },
+  });
+
+  console.log('Created admin:', admin.email, '| password:', adminPassword);
+
   // 1. Create a Parent
   const parent = await prisma.user.upsert({
     where: { email: 'parent@example.com' },
@@ -92,7 +110,8 @@ async function main() {
       route_id: route.id,
       student_id: student1.id,
       pickup_order: 1,
-      scheduled_time: '06:45'
+      scheduled_time: '06:45',
+      monthly_fee: 150.00
     }
   });
 
@@ -101,18 +120,27 @@ async function main() {
       route_id: route.id,
       student_id: student2.id,
       pickup_order: 2,
-      scheduled_time: '07:00'
+      scheduled_time: '07:00',
+      monthly_fee: 150.00
     }
   });
 
   console.log('Added students to route');
 
   // 6. Add Fees for Parent
+  const nextMonthDate = new Date();
+  nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
+  nextMonthDate.setDate(5);
+  const nextMonth = nextMonthDate.getMonth() + 1;
+  const nextYear = nextMonthDate.getFullYear();
+
   await prisma.fee.create({
     data: {
       student_id: student1.id,
       amount: 150.00,
-      due_date: new Date(new Date().setMonth(new Date().getMonth() + 1)), // Next month
+      due_date: nextMonthDate,
+      month: nextMonth,
+      year: nextYear,
       status: 'DUE'
     }
   });
@@ -121,7 +149,9 @@ async function main() {
     data: {
       student_id: student2.id,
       amount: 150.00,
-      due_date: new Date(new Date().setMonth(new Date().getMonth() + 1)), // Next month
+      due_date: nextMonthDate,
+      month: nextMonth,
+      year: nextYear,
       status: 'DUE'
     }
   });

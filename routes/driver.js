@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
+const { ensureMonthlyFees } = require('../utils/feeGenerator');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -137,6 +138,8 @@ router.post('/routes/:routeId/students', async (req, res) => {
     },
     include: { student: true }
   });
+
+  await ensureMonthlyFees({ studentIds: [student.id] });
 
   res.status(201).json({ routeStudent });
 });
@@ -393,12 +396,16 @@ router.get('/students/:studentId/fees', async (req, res) => {
     return res.status(404).json({ error: { message: 'Student not found on any of your routes', code: 'NOT_FOUND' } });
   }
 
+  await ensureMonthlyFees({ studentIds: [studentId] });
+
   const fees = await prisma.fee.findMany({
     where: { student_id: studentId },
     select: {
       id: true,
       amount: true,
       due_date: true,
+      month: true,
+      year: true,
       status: true,
       paid_date: true
     },
@@ -406,6 +413,75 @@ router.get('/students/:studentId/fees', async (req, res) => {
   });
 
   res.json({ fees });
+});
+
+// PATCH /driver/students/:studentId/fees/:feeId/pay
+const payStudentFeeParamsSchema = z.object({
+  studentId: z.string().uuid(),
+  feeId: z.string().uuid()
+});
+
+router.patch('/students/:studentId/fees/:feeId/pay', async (req, res) => {
+  const { studentId, feeId } = payStudentFeeParamsSchema.parse(req.params);
+
+  // Verify the student is on a route owned by this driver
+  const assignment = await prisma.routeStudent.findFirst({
+    where: {
+      student_id: studentId,
+      route: { driver_id: req.user.id }
+    }
+  });
+
+  if (!assignment) {
+    return res.status(404).json({ error: { message: 'Student not found on any of your routes', code: 'NOT_FOUND' } });
+  }
+
+  const fee = await prisma.fee.findFirst({
+    where: { id: feeId, student_id: studentId },
+    include: { student: true }
+  });
+
+  if (!fee) {
+    return res.status(404).json({ error: { message: 'Fee not found', code: 'NOT_FOUND' } });
+  }
+
+  if (fee.status === 'PAID') {
+    return res.status(409).json({ error: { message: 'Fee is already paid', code: 'CONFLICT' } });
+  }
+
+  const driverUser = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    select: { name: true }
+  });
+
+  const now = new Date();
+  const month = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(fee.due_date);
+  const year = fee.due_date.getFullYear();
+  const paidDateFormatted = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(now);
+  
+  const body = `Rs. ${fee.amount} payment for ${fee.student.name} (${month} ${year} fee) was collected and marked as paid by ${driverUser.name} on ${paidDateFormatted}.`;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedFee = await tx.fee.update({
+      where: { id: feeId },
+      data: { 
+        status: 'PAID',
+        paid_date: now
+      }
+    });
+
+    await tx.notification.create({
+      data: {
+        user_id: fee.student.parent_id,
+        title: "Payment Successful",
+        body
+      }
+    });
+
+    return updatedFee;
+  });
+
+  res.json({ fee: result });
 });
 
 module.exports = router;

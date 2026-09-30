@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
+const { ensureMonthlyFees } = require('../utils/feeGenerator');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -267,6 +268,26 @@ router.get('/routes', async (req, res) => {
     orderBy: { name: 'asc' }
   });
   res.json({ routes });
+});
+
+// ---------------------------------------------------------------------------
+// POST /admin/fees/generate
+// Generate monthly fees for all active students (optional body: { month, year })
+// ---------------------------------------------------------------------------
+const generateFeesSchema = z.object({
+  month: z.coerce.number().int().min(1).max(12).optional(),
+  year: z.coerce.number().int().min(2000).max(2100).optional(),
+}).optional();
+
+router.post('/fees/generate', async (req, res) => {
+  const data = req.body && Object.keys(req.body).length > 0
+    ? generateFeesSchema.parse(req.body)
+    : {};
+  const result = await ensureMonthlyFees({
+    month: data?.month,
+    year: data?.year
+  });
+  res.json({ created: result.created });
 });
 
 module.exports = router;

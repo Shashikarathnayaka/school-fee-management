@@ -3,6 +3,7 @@ const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { generateToken } = require('../utils/auth');
+const { ensureMonthlyFees } = require('../utils/feeGenerator');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -110,13 +111,23 @@ router.get('/students/:id/pickup-status', async (req, res) => {
 
 // GET /parent/fees - all fees across their children
 router.get('/fees', async (req, res) => {
+  const parentStudents = await prisma.student.findMany({
+    where: { parent_id: req.user.id },
+    select: { id: true }
+  });
+  const studentIds = parentStudents.map(s => s.id);
+  if (studentIds.length > 0) {
+    await ensureMonthlyFees({ studentIds });
+  }
+
   const fees = await prisma.fee.findMany({
     where: { 
       student: { parent_id: req.user.id }
     },
     include: {
       student: { select: { name: true, student_code: true } }
-    }
+    },
+    orderBy: { due_date: 'desc' }
   });
   res.json({ fees });
 });
@@ -126,22 +137,41 @@ router.patch('/fees/:feeId/pay', async (req, res) => {
   const { feeId } = req.params;
 
   const fee = await prisma.fee.findFirst({
-    where: { id: feeId, student: { parent_id: req.user.id } }
+    where: { id: feeId, student: { parent_id: req.user.id } },
+    include: { student: true }
   });
 
   if (!fee) {
     return res.status(404).json({ error: { message: 'Fee not found', code: 'NOT_FOUND' } });
   }
 
-  const updatedFee = await prisma.fee.update({
-    where: { id: feeId },
-    data: { 
-      status: 'PAID',
-      paid_date: new Date()
-    }
+  const now = new Date();
+  const month = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(fee.due_date);
+  const year = fee.due_date.getFullYear();
+  const paidDateFormatted = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(now);
+  const body = `Your payment of Rs. ${fee.amount} for ${fee.student.name} (${month} ${year} fee) was successful on ${paidDateFormatted}.`;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedFee = await tx.fee.update({
+      where: { id: feeId },
+      data: { 
+        status: 'PAID',
+        paid_date: now
+      }
+    });
+
+    await tx.notification.create({
+      data: {
+        user_id: req.user.id,
+        title: "Payment Successful",
+        body
+      }
+    });
+
+    return updatedFee;
   });
 
-  res.json({ fee: updatedFee });
+  res.json({ fee: result });
 });
 
 // GET /parent/notifications

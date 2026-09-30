@@ -194,13 +194,15 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 
 - **Method**: `GET`
 - **Endpoint**: `/parent/fees`
-- **Success Response (200 OK)**: Returns all pending and paid fees for all children belonging to the parent.
+- **Description**: Returns all pending and paid fees for all children belonging to the parent. Automatically ensures that current month fees are generated for children on active routes.
+- **Success Response (200 OK)**: Returns the list of fees (including `month`, `year`, `due_date`, `status`, and student details).
 
 #### 8. Pay a Fee
 
 - **Method**: `PATCH`
 - **Endpoint**: `/parent/fees/:feeId/pay`
 - **Parameters**: `:feeId` (Path) - The UUID of the fee.
+- **Description**: Pays the fee and automatically creates a payment success notification for the parent.
 - **Success Response (200 OK)**: Marks the fee status as `PAID`.
 
 #### 9. Get Parent Notifications
@@ -384,17 +386,86 @@ If an API request fails, the server responds with an appropriate HTTP status cod
       {
         "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
         "amount": "150.00",
-        "due_date": "2026-09-01T00:00:00.000Z",
+        "due_date": "2026-09-05T00:00:00.000Z",
+        "month": 9,
+        "year": 2026,
         "status": "PAID",
         "paid_date": "2026-08-28T10:00:00.000Z"
       },
       {
         "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
         "amount": "150.00",
-        "due_date": "2026-08-01T00:00:00.000Z",
+        "due_date": "2026-08-05T00:00:00.000Z",
+        "month": 8,
+        "year": 2026,
         "status": "DUE",
         "paid_date": null
       }
     ]
   }
   ```
+
+#### 13. Pay Student Fee (Collect Payment)
+
+- **Method**: `PATCH`
+- **Endpoint**: `/driver/students/:studentId/fees/:feeId/pay`
+- **Parameters**: 
+  - `:studentId` (Path) - The UUID of the student.
+  - `:feeId` (Path) - The UUID of the fee.
+- **Description**: Marks the fee as paid when collected by the driver and automatically creates a payment success notification for the student's parent. The driver must own a route the student is assigned to.
+- **Error Responses**:
+  - `400 Bad Request`: If `:studentId` or `:feeId` is not a valid UUID.
+  - `404 Not Found`: If student is not on driver's route, or fee does not exist.
+  - `409 Conflict`: If the fee is already paid.
+- **Success Response (200 OK)**: Returns the updated fee marked as `PAID`.
+
+---
+
+## 8. Admin Endpoints
+
+All admin endpoints require an authenticated user with the `ADMIN` role (`Authorization: Bearer <admin_token>`).
+
+#### 1. Generate Monthly Fees
+
+- **Method**: `POST`
+- **Endpoint**: `/admin/fees/generate`
+- **Description**: Generates monthly fee records for all students assigned to active (non-completed) routes. Safe to invoke repeatedly (idempotent, skips existing fees for the specified student, month, and year).
+- **Request Body (JSON, Optional)**:
+  ```json
+  {
+    "month": 10,  // Optional: integer 1-12. Defaults to current month.
+    "year": 2026   // Optional: integer (e.g., 2026). Defaults to current year.
+  }
+  ```
+- **Error Responses**:
+  - `400 Bad Request`: If month or year is out of valid range.
+  - `401 Unauthorized`: If unauthenticated.
+  - `403 Forbidden`: If user role is not `ADMIN`.
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "created": 5
+  }
+  ```
+
+---
+
+## 9. Cron Endpoints
+
+#### 1. Scheduled Monthly Fee Generation
+
+- **Method**: `GET`
+- **Endpoint**: `/cron/generate-fees`
+- **Description**: Intended for automated execution (e.g. Vercel Cron on the 1st of every month at midnight `0 0 1 * *`). Generates monthly fee records for all active students for the current month and year.
+- **Authentication**: Protected by a static bearer token matching the server's `CRON_SECRET` environment variable:
+  - Header: `Authorization: Bearer <CRON_SECRET>`
+- **Error Responses**:
+  - `401 Unauthorized`: If `CRON_SECRET` is missing, or header does not match `Bearer <CRON_SECRET>`.
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "created": 5
+  }
+  ```
+

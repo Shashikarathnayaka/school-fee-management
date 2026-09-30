@@ -56,6 +56,19 @@ Content-Type: application/json
 
 @driverToken = {{loginDriver.response.body.token}}
 
+### Login Admin
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@test.com",
+  "password": "Admin@123"
+}
+
+@adminToken = {{loginAdmin.response.body.token}}
+@cronSecret = development_cron_secret_123
+
 # ==========================================
 # PARENT ENDPOINTS
 # ==========================================
@@ -178,3 +191,38 @@ Authorization: Bearer {{driverToken}}
 ### Get Student Fee Payment Status
 GET {{baseUrl}}/driver/students/{{studentId}}/fees
 Authorization: Bearer {{driverToken}}
+
+### Pay Student Fee (Collect Payment)
+PATCH {{baseUrl}}/driver/students/{{studentId}}/fees/{{feeId}}/pay
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+# ==========================================
+# ADMIN ENDPOINTS
+# ==========================================
+
+### Generate Monthly Fees (All Active Students - Specific Month/Year)
+POST {{baseUrl}}/admin/fees/generate
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "month": 10,
+  "year": 2026
+}
+
+### Generate Monthly Fees (All Active Students - Current Default)
+POST {{baseUrl}}/admin/fees/generate
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{}
+
+# ==========================================
+# CRON ENDPOINTS
+# ==========================================
+
+### Trigger Monthly Fee Generation Cron Job
+GET {{baseUrl}}/cron/generate-fees
+Authorization: Bearer {{cronSecret}}
+

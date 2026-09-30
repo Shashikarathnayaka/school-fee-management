@@ -7,6 +7,7 @@ const authRoutes = require('./routes/auth');
 const parentRoutes = require('./routes/parent');
 const driverRoutes = require('./routes/driver');
 const adminRoutes = require('./routes/admin');
+const cronRoutes = require('./routes/cron');
 
 const app = express();
 
@@ -19,6 +20,7 @@ app.use('/auth', authRoutes);
 app.use('/parent', parentRoutes);
 app.use('/driver', driverRoutes);
 app.use('/admin', adminRoutes);
+app.use('/cron', cronRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

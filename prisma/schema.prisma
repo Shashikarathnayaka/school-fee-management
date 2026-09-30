@@ -130,9 +130,12 @@ model Fee {
   student    Student   @relation(fields: [student_id], references: [id], onDelete: Cascade)
   amount     Decimal   @db.Decimal(10, 2)
   due_date   DateTime
+  month      Int
+  year       Int
   status     FeeStatus @default(DUE)
   paid_date  DateTime?
 
+  @@unique([student_id, month, year])
   @@map("fees")
 }
 
