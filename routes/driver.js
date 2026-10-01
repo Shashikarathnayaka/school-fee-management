@@ -181,38 +181,80 @@ router.patch('/pickup/:studentId', async (req, res) => {
     return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
   }
 
-  // Upsert pickup status for today
-  const today = new Date();
-  // To avoid time issues with unique constraint, reset time to 00:00:00 for the date field
-  today.setHours(0, 0, 0, 0);
-
-  // We can't use simple upsert with a composite unique key in Prisma without the exact unique values
-  // Find first
-  let pickup = await prisma.pickupStatus.findFirst({
-    where: {
-      student_id: studentId,
-      route_id: routeId,
-      date: today
-    }
-  });
-
-  if (pickup) {
-    pickup = await prisma.pickupStatus.update({
-      where: { id: pickup.id },
-      data: { status }
-    });
-  } else {
-    pickup = await prisma.pickupStatus.create({
-      data: {
-        student_id: studentId,
-        route_id: routeId,
-        date: today,
-        status
-      }
-    });
+  // Verify student exists and get parent details
+  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  if (!student) {
+    return res.status(404).json({ error: { message: 'Student not found', code: 'NOT_FOUND' } });
   }
 
-  res.json({ pickup });
+  // Get driver name for notification body
+  const driverUser = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    select: { name: true }
+  });
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const result = await prisma.$transaction(async (tx) => {
+    // Read the existing pickupStatus row for today BEFORE upserting
+    const existingPickup = await tx.pickupStatus.findFirst({
+      where: {
+        student_id: studentId,
+        route_id: routeId,
+        date: today
+      }
+    });
+
+    const previousStatus = existingPickup ? existingPickup.status : null;
+    const hasStatusChanged = previousStatus !== status;
+
+    let pickup;
+    if (existingPickup) {
+      pickup = await tx.pickupStatus.update({
+        where: { id: existingPickup.id },
+        data: { status }
+      });
+    } else {
+      pickup = await tx.pickupStatus.create({
+        data: {
+          student_id: studentId,
+          route_id: routeId,
+          date: today,
+          status
+        }
+      });
+    }
+
+    // Create a Notification for the student's parent ONLY when the status actually changes to PICKED_UP or ABSENT
+    if (hasStatusChanged && (status === 'PICKED_UP' || status === 'ABSENT')) {
+      const now = new Date();
+      let title;
+      let body;
+
+      if (status === 'PICKED_UP') {
+        const timeFormatted = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Colombo', hour: '2-digit', minute: '2-digit', hour12: false }).format(now);
+        title = 'Child Picked Up';
+        body = `${student.name} was picked up at ${timeFormatted} by ${driverUser.name}.`;
+      } else if (status === 'ABSENT') {
+        const dateFormatted = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Colombo', day: '2-digit', month: 'short', year: 'numeric' }).format(now);
+        title = 'Marked Absent';
+        body = `${student.name} was marked absent today (${dateFormatted}).`;
+      }
+
+      await tx.notification.create({
+        data: {
+          user_id: student.parent_id,
+          title,
+          body
+        }
+      });
+    }
+
+    return pickup;
+  });
+
+  res.json({ pickup: result });
 });
 
 // PATCH /driver/routes/:routeId/complete - mark route as completed, cascade PENDING→ABSENT

@@ -202,7 +202,9 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Method**: `PATCH`
 - **Endpoint**: `/parent/fees/:feeId/pay`
 - **Parameters**: `:feeId` (Path) - The UUID of the fee.
-- **Description**: Pays the fee and automatically creates a payment success notification for the parent.
+- **Description**: Pays the fee and automatically creates:
+  1. A payment success notification for the parent (`"Payment Successful"`).
+  2. A notification for the driver who owns the student's active route (`"Fee Paid by Parent"`, body: `"{parent name} paid {month}/{year} fee for {student name}."`). If the student has no active route/driver, this notification is skipped silently without failing the payment.
 - **Success Response (200 OK)**: Marks the fee status as `PAID`.
 
 #### 9. Get Parent Notifications
@@ -295,7 +297,13 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/pickup/:studentId`
 - **Parameters**: `:studentId` (Path) - The UUID of the student.
-- **Description**: Records or updates the student's pickup status for the current day on a specific route.
+- **Description**: Records or updates the student's pickup status for the current day on a specific route within a single transaction.
+  - Automatically creates a notification for the student's parent when the status changes:
+    - `PICKED_UP`: Title `"Child Picked Up"`, body `"{student name} was picked up at {HH:mm} by {driver name}."`
+    - `ABSENT`: Title `"Marked Absent"`, body `"{student name} was marked absent today ({date})."`
+  - Notifications are created **only** when the status actually changes (previous status differs from the new one).
+  - No notification is created when the new status is `PENDING`.
+  - Duplicate submissions of the same status do not trigger duplicate notifications.
 - **Body**:
 
   ```json
@@ -409,7 +417,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/students/:studentId/fees/:feeId/pay`
-- **Parameters**: 
+- **Parameters**:
   - `:studentId` (Path) - The UUID of the student.
   - `:feeId` (Path) - The UUID of the fee.
 - **Description**: Marks the fee as paid when collected by the driver and automatically creates a payment success notification for the student's parent. The driver must own a route the student is assigned to.

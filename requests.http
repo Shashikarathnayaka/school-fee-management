@@ -120,8 +120,16 @@ Authorization: Bearer {{parentToken}}
 GET {{baseUrl}}/parent/fees
 Authorization: Bearer {{parentToken}}
 
+### Pay a Fee (Parent Self-Pay)
+PATCH {{baseUrl}}/parent/fees/{{feeId}}/pay
+Authorization: Bearer {{parentToken}}
+
 ### Get Parent Notifications
 GET {{baseUrl}}/parent/notifications
+Authorization: Bearer {{parentToken}}
+
+### Mark Parent Notification as Read
+PATCH {{baseUrl}}/parent/notifications/{{notificationId}}/read
 Authorization: Bearer {{parentToken}}
 
 
@@ -195,6 +203,14 @@ Authorization: Bearer {{driverToken}}
 ### Pay Student Fee (Collect Payment)
 PATCH {{baseUrl}}/driver/students/{{studentId}}/fees/{{feeId}}/pay
 Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+### Get Driver Notifications
+GET {{baseUrl}}/driver/notifications
+Authorization: Bearer {{driverToken}}
+
+### Mark Driver Notification as Read
+PATCH {{baseUrl}}/driver/notifications/{{notificationId}}/read
 Authorization: Bearer {{driverToken}}
 
 # ==========================================

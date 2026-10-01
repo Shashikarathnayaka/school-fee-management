@@ -138,7 +138,13 @@ router.patch('/fees/:feeId/pay', async (req, res) => {
 
   const fee = await prisma.fee.findFirst({
     where: { id: feeId, student: { parent_id: req.user.id } },
-    include: { student: true }
+    include: {
+      student: {
+        include: {
+          parent: { select: { name: true } }
+        }
+      }
+    }
   });
 
   if (!fee) {
@@ -167,6 +173,28 @@ router.patch('/fees/:feeId/pay', async (req, res) => {
         body
       }
     });
+
+    // Notify the driver who owns the student's active route
+    const activeRouteStudent = await tx.routeStudent.findFirst({
+      where: {
+        student_id: fee.student_id,
+        route: { status: { not: 'COMPLETED' } }
+      },
+      include: {
+        route: true
+      }
+    });
+
+    if (activeRouteStudent?.route?.driver_id) {
+      const parentName = fee.student.parent?.name || 'Parent';
+      await tx.notification.create({
+        data: {
+          user_id: activeRouteStudent.route.driver_id,
+          title: "Fee Paid by Parent",
+          body: `${parentName} paid ${fee.month}/${fee.year} fee for ${fee.student.name}.`
+        }
+      });
+    }
 
     return updatedFee;
   });
