@@ -141,6 +141,16 @@ router.post('/pickups/ticket', async (req, res) => {
     return res.status(404).json({ error: { message: 'Route not found', code: 'ROUTE_NOT_FOUND' } });
   }
 
+  // Verify the student is assigned to this route
+  const onRoute = await prisma.routeStudent.findFirst({
+    where: { student_id: student.id, route_id }
+  });
+  if (!onRoute) {
+    return res.status(409).json({
+      error: { message: 'Student is not assigned to this route', code: 'NOT_ON_ROUTE' }
+    });
+  }
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
