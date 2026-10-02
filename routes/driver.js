@@ -30,6 +30,9 @@ router.post('/routes', async (req, res) => {
 
 // GET /driver/routes/today
 router.get('/routes/today', async (req, res) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
   const routes = await prisma.route.findMany({
     where: { driver_id: req.user.id },
     include: {
@@ -38,7 +41,7 @@ router.get('/routes/today', async (req, res) => {
           student: {
             include: {
               pickup_status: {
-                where: { date: new Date() } // Simplistic today filtering, could be improved with timezone handling
+                where: { date: today }
               }
             }
           }
@@ -379,7 +382,7 @@ router.patch('/notifications/:id/read', async (req, res) => {
 router.get('/profile', async (req, res) => {
   const profile = await prisma.user.findUnique({
     where: { id: req.user.id },
-    select: { 
+    select: {
       id: true, name: true, email: true, phone: true, created_at: true,
       driver: true
     }
@@ -397,7 +400,7 @@ const updateProfileSchema = z.object({
 
 router.patch('/profile', async (req, res) => {
   const { name, phone, van_number, license_no } = updateProfileSchema.parse(req.body);
-  
+
   const profile = await prisma.user.update({
     where: { id: req.user.id },
     data: {
@@ -410,7 +413,7 @@ router.patch('/profile', async (req, res) => {
         }
       }
     },
-    select: { 
+    select: {
       id: true, name: true, email: true, phone: true, created_at: true,
       driver: true
     }
@@ -500,13 +503,13 @@ router.patch('/students/:studentId/fees/:feeId/pay', async (req, res) => {
   const month = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(fee.due_date);
   const year = fee.due_date.getFullYear();
   const paidDateFormatted = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(now);
-  
+
   const body = `Rs. ${fee.amount} payment for ${fee.student.name} (${month} ${year} fee) was collected and marked as paid by ${driverUser.name} on ${paidDateFormatted}.`;
 
   const result = await prisma.$transaction(async (tx) => {
     const updatedFee = await tx.fee.update({
       where: { id: feeId },
-      data: { 
+      data: {
         status: 'PAID',
         paid_date: now
       }

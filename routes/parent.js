@@ -39,7 +39,7 @@ const createStudentSchema = z.object({
 
 router.post('/students', async (req, res) => {
   const data = createStudentSchema.parse(req.body);
-  
+
   let student_code;
   let isUnique = false;
   // Ensure uniqueness of student code
@@ -88,10 +88,16 @@ router.get('/students/:id/pickup-status', async (req, res) => {
     return res.status(404).json({ error: { message: 'Student not found', code: 'NOT_FOUND' } });
   }
 
-  const queryDate = date ? new Date(date) : new Date();
-  
+  let queryDate;
+  if (date) {
+    queryDate = new Date(date);
+  } else {
+    queryDate = new Date();
+    queryDate.setHours(0, 0, 0, 0);
+  }
+
   const status = await prisma.pickupStatus.findMany({
-    where: { 
+    where: {
       student_id: id,
       date: queryDate
     },
@@ -121,7 +127,7 @@ router.get('/fees', async (req, res) => {
   }
 
   const fees = await prisma.fee.findMany({
-    where: { 
+    where: {
       student: { parent_id: req.user.id }
     },
     include: {
@@ -160,7 +166,7 @@ router.patch('/fees/:feeId/pay', async (req, res) => {
   const result = await prisma.$transaction(async (tx) => {
     const updatedFee = await tx.fee.update({
       where: { id: feeId },
-      data: { 
+      data: {
         status: 'PAID',
         paid_date: now
       }
