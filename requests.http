@@ -178,7 +178,7 @@ Authorization: Bearer {{driverToken}}
 GET {{baseUrl}}/driver/routes/today
 Authorization: Bearer {{driverToken}}
 
-### Update Pickup Status
+### Update Pickup Status (PICKED_UP or DROPPED)
 PATCH {{baseUrl}}/driver/pickup/{{studentId}}
 Content-Type: application/json
 Authorization: Bearer {{driverToken}}
@@ -186,6 +186,16 @@ Authorization: Bearer {{driverToken}}
 {
   "status": "PICKED_UP",
   "routeId": "{{routeId}}"
+}
+
+### Remind Parents of Due Transport Fees
+POST {{baseUrl}}/driver/fees/remind
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "month": 10,
+  "year": 2026
 }
 
 ### Remove Student from Route
@@ -216,6 +226,30 @@ Authorization: Bearer {{driverToken}}
 # ==========================================
 # ADMIN ENDPOINTS
 # ==========================================
+
+### Get Pickups List (Filter by Status including DROPPED)
+GET {{baseUrl}}/admin/pickups?status=DROPPED&page=1&limit=50
+Authorization: Bearer {{adminToken}}
+
+### Mark Pickup Status (Admin Override)
+PATCH {{baseUrl}}/admin/pickups/{{pickupId}}/mark
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "status": "DROPPED",
+  "force": false
+}
+
+### Ticket-Based Pickup
+POST {{baseUrl}}/admin/pickups/ticket
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "student_code": "{{studentCode}}",
+  "route_id": "{{routeId}}"
+}
 
 ### Generate Monthly Fees (All Active Students - Specific Month/Year)
 POST {{baseUrl}}/admin/fees/generate

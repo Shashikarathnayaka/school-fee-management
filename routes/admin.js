@@ -3,6 +3,8 @@ const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
+const { slToday } = require('../utils/slDate');
+const { applyPickupStatus } = require('../utils/pickupEngine');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -18,7 +20,7 @@ const pickupsQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   route_id: z.string().uuid().optional(),
   student_id: z.string().uuid().optional(),
-  status: z.enum(['PENDING', 'PICKED_UP', 'ABSENT']).optional(),
+  status: z.enum(['PENDING', 'PICKED_UP', 'DROPPED', 'ABSENT']).optional(),
   page: z.coerce.number().int().positive().optional().default(1),
   limit: z.coerce.number().int().positive().max(200).optional().default(50),
 });
@@ -76,7 +78,7 @@ router.get('/pickups', async (req, res) => {
 // Does NOT allow moving backward (PICKED_UP/ABSENT → PENDING) unless force=true
 // ---------------------------------------------------------------------------
 const markPickupSchema = z.object({
-  status: z.enum(['PICKED_UP', 'ABSENT', 'PENDING']),
+  status: z.enum(['PICKED_UP', 'DROPPED', 'ABSENT', 'PENDING']),
   force: z.boolean().optional().default(false),
 });
 
@@ -89,8 +91,8 @@ router.patch('/pickups/:id/mark', async (req, res) => {
     return res.status(404).json({ error: { message: 'Pickup record not found', code: 'NOT_FOUND' } });
   }
 
-  // Guard against backward moves: PICKED_UP/ABSENT → PENDING
-  const isBackward = (existing.status === 'PICKED_UP' || existing.status === 'ABSENT') && status === 'PENDING';
+  // Guard against backward moves: PICKED_UP/DROPPED/ABSENT → PENDING
+  const isBackward = (existing.status === 'PICKED_UP' || existing.status === 'DROPPED' || existing.status === 'ABSENT') && status === 'PENDING';
   if (isBackward && !force) {
     return res.status(400).json({
       error: {
@@ -100,17 +102,12 @@ router.patch('/pickups/:id/mark', async (req, res) => {
     });
   }
 
-  const pickup = await prisma.pickupStatus.update({
-    where: { id },
-    data: {
-      status,
-      pickup_method: 'MANUAL',
-      marked_by: req.user.id,
-    },
-    include: {
-      student: { select: { id: true, name: true, student_code: true } },
-      route: { select: { id: true, name: true } }
-    }
+  const { pickup } = await applyPickupStatus({
+    studentId: existing.student_id,
+    routeId: existing.route_id,
+    status,
+    actorUserId: req.user.id,
+    method: 'MANUAL'
   });
 
   res.json({ pickup });
@@ -151,8 +148,7 @@ router.post('/pickups/ticket', async (req, res) => {
     });
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = slToday();
 
   // Check for an existing record
   const existing = await prisma.pickupStatus.findFirst({
@@ -160,8 +156,8 @@ router.post('/pickups/ticket', async (req, res) => {
   });
 
   if (existing) {
-    // If already marked PICKED_UP or ABSENT, return 409
-    if (existing.status === 'PICKED_UP' || existing.status === 'ABSENT') {
+    // If already marked PICKED_UP, ABSENT or DROPPED, return 409
+    if (existing.status === 'PICKED_UP' || existing.status === 'ABSENT' || existing.status === 'DROPPED') {
       return res.status(409).json({
         error: {
           message: `Student already marked as ${existing.status}`,
@@ -171,36 +167,24 @@ router.post('/pickups/ticket', async (req, res) => {
     }
 
     // Existing PENDING → update to PICKED_UP
-    const pickup = await prisma.pickupStatus.update({
-      where: { id: existing.id },
-      data: {
-        status: 'PICKED_UP',
-        pickup_method: 'TICKET',
-        marked_by: req.user.id,
-      },
-      include: {
-        student: { select: { id: true, name: true, student_code: true } },
-        route: { select: { id: true, name: true } }
-      }
+    const { pickup } = await applyPickupStatus({
+      studentId: student.id,
+      routeId: route_id,
+      status: 'PICKED_UP',
+      actorUserId: req.user.id,
+      method: 'TICKET'
     });
 
     return res.json({ pickup });
   }
 
   // No existing record — create one
-  const pickup = await prisma.pickupStatus.create({
-    data: {
-      student_id: student.id,
-      route_id,
-      date: today,
-      status: 'PICKED_UP',
-      pickup_method: 'TICKET',
-      marked_by: req.user.id,
-    },
-    include: {
-      student: { select: { id: true, name: true, student_code: true } },
-      route: { select: { id: true, name: true } }
-    }
+  const { pickup } = await applyPickupStatus({
+    studentId: student.id,
+    routeId: route_id,
+    status: 'PICKED_UP',
+    actorUserId: req.user.id,
+    method: 'TICKET'
   });
 
   res.status(201).json({ pickup });

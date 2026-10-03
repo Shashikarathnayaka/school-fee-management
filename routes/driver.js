@@ -3,6 +3,8 @@ const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
+const { slToday, slDateString, slMonthYear } = require('../utils/slDate');
+const { applyPickupStatus } = require('../utils/pickupEngine');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -30,8 +32,7 @@ router.post('/routes', async (req, res) => {
 
 // GET /driver/routes/today
 router.get('/routes/today', async (req, res) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = slToday();
 
   const routes = await prisma.route.findMany({
     where: { driver_id: req.user.id },
@@ -70,8 +71,7 @@ router.patch('/status', async (req, res) => {
 
     // Auto-absent cascade: when going off-duty, mark all today's PENDING pickups as ABSENT
     if (current.is_on_duty === true && is_on_duty === false) {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = slToday();
       const routes = await tx.route.findMany({
         where: { driver_id: req.user.id },
         select: { id: true }
@@ -170,7 +170,7 @@ router.delete('/routes/:routeId/students/:studentId', async (req, res) => {
 
 // PATCH /driver/pickup/:studentId
 const pickupSchema = z.object({
-  status: z.enum(['PICKED_UP', 'ABSENT', 'PENDING']),
+  status: z.enum(['PICKED_UP', 'DROPPED', 'ABSENT', 'PENDING']),
   routeId: z.string() // Need to know which route to record it against
 });
 
@@ -184,87 +184,21 @@ router.patch('/pickup/:studentId', async (req, res) => {
     return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
   }
 
-  // Verify student exists and get parent details
-  const student = await prisma.student.findUnique({ where: { id: studentId } });
-  if (!student) {
-    return res.status(404).json({ error: { message: 'Student not found', code: 'NOT_FOUND' } });
-  }
-
-  // Get driver name for notification body
-  const driverUser = await prisma.user.findUnique({
-    where: { id: req.user.id },
-    select: { name: true }
+  const { pickup, fee, charge } = await applyPickupStatus({
+    studentId,
+    routeId,
+    status,
+    actorUserId: req.user.id,
+    method: 'MANUAL'
   });
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const result = await prisma.$transaction(async (tx) => {
-    // Read the existing pickupStatus row for today BEFORE upserting
-    const existingPickup = await tx.pickupStatus.findFirst({
-      where: {
-        student_id: studentId,
-        route_id: routeId,
-        date: today
-      }
-    });
-
-    const previousStatus = existingPickup ? existingPickup.status : null;
-    const hasStatusChanged = previousStatus !== status;
-
-    let pickup;
-    if (existingPickup) {
-      pickup = await tx.pickupStatus.update({
-        where: { id: existingPickup.id },
-        data: { status }
-      });
-    } else {
-      pickup = await tx.pickupStatus.create({
-        data: {
-          student_id: studentId,
-          route_id: routeId,
-          date: today,
-          status
-        }
-      });
-    }
-
-    // Create a Notification for the student's parent ONLY when the status actually changes to PICKED_UP or ABSENT
-    if (hasStatusChanged && (status === 'PICKED_UP' || status === 'ABSENT')) {
-      const now = new Date();
-      let title;
-      let body;
-
-      if (status === 'PICKED_UP') {
-        const timeFormatted = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Colombo', hour: '2-digit', minute: '2-digit', hour12: false }).format(now);
-        title = 'Child Picked Up';
-        body = `${student.name} was picked up at ${timeFormatted} by ${driverUser.name}.`;
-      } else if (status === 'ABSENT') {
-        const dateFormatted = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Colombo', day: '2-digit', month: 'short', year: 'numeric' }).format(now);
-        title = 'Marked Absent';
-        body = `${student.name} was marked absent today (${dateFormatted}).`;
-      }
-
-      await tx.notification.create({
-        data: {
-          user_id: student.parent_id,
-          title,
-          body
-        }
-      });
-    }
-
-    return pickup;
-  });
-
-  res.json({ pickup: result });
+  res.json({ pickup, fee, charge });
 });
 
 // PATCH /driver/routes/:routeId/complete - mark route as completed, cascade PENDING→ABSENT
 router.patch('/routes/:routeId/complete', async (req, res) => {
   const { routeId } = req.params;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = slToday();
 
   const result = await prisma.$transaction(async (tx) => {
     // Verify driver owns route
@@ -452,12 +386,26 @@ router.get('/students/:studentId/fees', async (req, res) => {
       month: true,
       year: true,
       status: true,
-      paid_date: true
+      paid_date: true,
+      trips_count: true
     },
     orderBy: { due_date: 'desc' }
   });
 
-  res.json({ fees });
+  const per_trip_amount = assignment && assignment.monthly_fee
+    ? Number((Math.round((Number(assignment.monthly_fee) / 40) * 100) / 100).toFixed(2))
+    : null;
+
+  const formattedFees = fees.map(f => ({
+    ...f,
+    trips_count: f.trips_count ?? 0,
+    trips_total: 40,
+    per_trip_amount,
+    month: f.month,
+    year: f.year
+  }));
+
+  res.json({ fees: formattedFees });
 });
 
 // PATCH /driver/students/:studentId/fees/:feeId/pay
@@ -527,6 +475,105 @@ router.patch('/students/:studentId/fees/:feeId/pay', async (req, res) => {
   });
 
   res.json({ fee: result });
+});
+
+// POST /driver/fees/remind - send fee reminders to parents of students on active routes
+const remindFeesSchema = z.object({
+  month: z.coerce.number().int().min(1).max(12).optional(),
+  year: z.coerce.number().int().min(2000).max(2100).optional(),
+}).optional();
+
+router.post('/fees/remind', async (req, res) => {
+  const data = req.body && Object.keys(req.body).length > 0
+    ? remindFeesSchema.parse(req.body)
+    : {};
+
+  const currentSl = slMonthYear();
+  const targetMonth = data?.month !== undefined ? Number(data.month) : currentSl.month;
+  const targetYear = data?.year !== undefined ? Number(data.year) : currentSl.year;
+
+  const monthName = new Intl.DateTimeFormat('en-US', { month: 'long' })
+    .format(new Date(Date.UTC(targetYear, targetMonth - 1, 1)));
+
+  const todaySLStr = slDateString();
+  const slStartOfDay = new Date(`${todaySLStr}T00:00:00+05:30`);
+
+  const routeStudents = await prisma.routeStudent.findMany({
+    where: {
+      route: {
+        driver_id: req.user.id,
+        status: { not: 'COMPLETED' }
+      }
+    },
+    include: {
+      student: {
+        select: {
+          id: true,
+          name: true,
+          parent_id: true
+        }
+      }
+    }
+  });
+
+  const studentMap = new Map();
+  for (const rs of routeStudents) {
+    if (rs.student && !studentMap.has(rs.student.id)) {
+      studentMap.set(rs.student.id, rs.student);
+    }
+  }
+
+  const studentIds = Array.from(studentMap.keys());
+  if (studentIds.length === 0) {
+    return res.json({ sent: 0, skipped: 0 });
+  }
+
+  const fees = await prisma.fee.findMany({
+    where: {
+      student_id: { in: studentIds },
+      month: targetMonth,
+      year: targetYear,
+      status: 'DUE',
+      amount: { gt: 0 }
+    }
+  });
+
+  let sent = 0;
+  let skipped = 0;
+
+  for (const fee of fees) {
+    const student = studentMap.get(fee.student_id);
+    if (!student || !student.parent_id) continue;
+
+    const formattedAmount = Number(fee.amount).toLocaleString('en-US');
+    const tripsCount = fee.trips_count ?? 0;
+    const title = 'Transport Fee Reminder';
+    const body = `${student.name}'s transport fee for ${monthName} ${targetYear} is Rs. ${formattedAmount} (${tripsCount} trips). Please pay your driver.`;
+
+    const existingNotif = await prisma.notification.findFirst({
+      where: {
+        user_id: student.parent_id,
+        title,
+        body,
+        created_at: { gte: slStartOfDay }
+      }
+    });
+
+    if (existingNotif) {
+      skipped++;
+    } else {
+      await prisma.notification.create({
+        data: {
+          user_id: student.parent_id,
+          title,
+          body
+        }
+      });
+      sent++;
+    }
+  }
+
+  res.json({ sent, skipped });
 });
 
 module.exports = router;

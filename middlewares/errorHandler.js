@@ -32,6 +32,16 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
+  // Handle custom HTTP errors (e.g. HttpError)
+  if (err.statusCode || err.status) {
+    return res.status(err.statusCode || err.status).json({
+      error: {
+        message: err.message,
+        code: err.code || 'ERROR'
+      }
+    });
+  }
+
   res.status(500).json({
     error: {
       message: err.message || 'Internal Server Error',

@@ -1,4 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
+const { slMonthYear } = require('./slDate');
 const prisma = new PrismaClient();
 
 /**
@@ -12,12 +13,12 @@ const prisma = new PrismaClient();
  * @returns {Promise<{ created: number, count: number }>}
  */
 async function ensureMonthlyFees({ studentIds, month, year } = {}) {
-  const now = new Date();
-  const targetMonth = month !== undefined ? Number(month) : (now.getMonth() + 1);
-  const targetYear = year !== undefined ? Number(year) : now.getFullYear();
+  const currentSl = slMonthYear();
+  const targetMonth = month !== undefined ? Number(month) : currentSl.month;
+  const targetYear = year !== undefined ? Number(year) : currentSl.year;
 
-  // Due date is the 5th of that month (UTC midnight)
-  const dueDate = new Date(Date.UTC(targetYear, targetMonth - 1, 5, 0, 0, 0));
+  // Due date is the 5th of the NEXT month (UTC midnight)
+  const dueDate = new Date(Date.UTC(targetYear, targetMonth, 5, 0, 0, 0));
 
   const where = {
     route: {
@@ -59,9 +60,10 @@ async function ensureMonthlyFees({ studentIds, month, year } = {}) {
     }
   }
 
-  const feeData = Array.from(studentFeeMap.entries()).map(([student_id, monthly_fee]) => ({
+  const feeData = Array.from(studentFeeMap.keys()).map((student_id) => ({
     student_id,
-    amount: monthly_fee,
+    amount: 0,
+    trips_count: 0,
     due_date: dueDate,
     month: targetMonth,
     year: targetYear,

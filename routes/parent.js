@@ -4,6 +4,7 @@ const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { generateToken } = require('../utils/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
+const { slToday } = require('../utils/slDate');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -92,8 +93,7 @@ router.get('/students/:id/pickup-status', async (req, res) => {
   if (date) {
     queryDate = new Date(date);
   } else {
-    queryDate = new Date();
-    queryDate.setHours(0, 0, 0, 0);
+    queryDate = slToday();
   }
 
   const status = await prisma.pickupStatus.findMany({
@@ -135,7 +135,53 @@ router.get('/fees', async (req, res) => {
     },
     orderBy: { due_date: 'desc' }
   });
-  res.json({ fees });
+
+  const distinctStudentIds = [...new Set(fees.map(f => f.student_id))];
+  const routeStudents = await prisma.routeStudent.findMany({
+    where: {
+      student_id: { in: distinctStudentIds },
+      route: { status: { not: 'COMPLETED' } }
+    },
+    select: { student_id: true, monthly_fee: true }
+  });
+
+  const routeStudentMap = new Map();
+  for (const rs of routeStudents) {
+    if (!routeStudentMap.has(rs.student_id)) {
+      routeStudentMap.set(rs.student_id, rs.monthly_fee);
+    }
+  }
+
+  const missingStudentIds = distinctStudentIds.filter(id => !routeStudentMap.has(id));
+  if (missingStudentIds.length > 0) {
+    const fallbackRS = await prisma.routeStudent.findMany({
+      where: { student_id: { in: missingStudentIds } },
+      select: { student_id: true, monthly_fee: true }
+    });
+    for (const rs of fallbackRS) {
+      if (!routeStudentMap.has(rs.student_id)) {
+        routeStudentMap.set(rs.student_id, rs.monthly_fee);
+      }
+    }
+  }
+
+  const formattedFees = fees.map(f => {
+    const monthlyFee = routeStudentMap.get(f.student_id);
+    const per_trip_amount = monthlyFee !== undefined && monthlyFee !== null
+      ? Number((Math.round((Number(monthlyFee) / 40) * 100) / 100).toFixed(2))
+      : null;
+
+    return {
+      ...f,
+      trips_count: f.trips_count ?? 0,
+      trips_total: 40,
+      per_trip_amount,
+      month: f.month,
+      year: f.year
+    };
+  });
+
+  res.json({ fees: formattedFees });
 });
 
 // PATCH /parent/fees/:feeId/pay - mark as paid

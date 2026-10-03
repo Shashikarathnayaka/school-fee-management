@@ -195,7 +195,18 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Method**: `GET`
 - **Endpoint**: `/parent/fees`
 - **Description**: Returns all pending and paid fees for all children belonging to the parent. Automatically ensures that current month fees are generated for children on active routes.
-- **Success Response (200 OK)**: Returns the list of fees (including `month`, `year`, `due_date`, `status`, and student details).
+- **Success Response (200 OK)**: Returns the list of fees including:
+  - `id`: Fee UUID
+  - `amount`: Current calculated fee amount (capped at `monthly_fee`)
+  - `due_date`: Due date (5th of next month)
+  - `month`: Fee month (1-12)
+  - `year`: Fee year
+  - `status`: `DUE` or `PAID`
+  - `paid_date`: Date payment was made
+  - `trips_count`: Number of trips recorded this month
+  - `trips_total`: 40 (maximum monthly billable trips)
+  - `per_trip_amount`: Calculated fee per trip (`monthly_fee / 40` rounded to 2 decimals)
+  - `student`: `{ name, student_code }`
 
 #### 8. Pay a Fee
 
@@ -297,19 +308,36 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/pickup/:studentId`
 - **Parameters**: `:studentId` (Path) - The UUID of the student.
-- **Description**: Records or updates the student's pickup status for the current day on a specific route within a single transaction.
-  - Automatically creates a notification for the student's parent when the status changes:
-    - `PICKED_UP`: Title `"Child Picked Up"`, body `"{student name} was picked up at {HH:mm} by {driver name}."`
-    - `ABSENT`: Title `"Marked Absent"`, body `"{student name} was marked absent today ({date})."`
-  - Notifications are created **only** when the status actually changes (previous status differs from the new one).
-  - No notification is created when the new status is `PENDING`.
-  - Duplicate submissions of the same status do not trigger duplicate notifications.
+- **Description**: Records or updates the student's pickup status for today on a specific route within a single transaction using the per-trip fee engine.
+  - Allowed statuses: `PENDING`, `PICKED_UP`, `DROPPED`, `ABSENT`.
+  - Transition rule: `DROPPED` is only allowed when current status is `PICKED_UP` (or already `DROPPED`). Attempting `DROPPED` from `PENDING` or `ABSENT` returns `409 Conflict` with code `PICKUP_REQUIRED`.
+  - Charges:
+    - Moving to `PICKED_UP` adds 1 `PICKUP` charge (`round(monthly_fee / 40, 2)`).
+    - Moving to `DROPPED` adds 1 `DROP` charge (`round(monthly_fee / 40, 2)`).
+    - Moving from `DROPPED` back to `PICKED_UP` deletes the `DROP` charge.
+    - Moving to `PENDING` or `ABSENT` deletes both charges for that day.
+    - Fee amount = `MIN(SUM(trip_charges), monthly_fee)`, `trips_count = COUNT(trip_charges)`.
+    - Maximum 40 charges per monthly fee (subsequent charges silently skipped).
+    - A `PAID` fee is locked (status and notifications still apply, but no charges are added/removed).
+  - Notifications: Automatically created for parent only when status changes:
+    - `PICKED_UP`: `"Child Picked Up"`, body `"{student} was picked up from {location} at {h:mm A}."`
+    - `DROPPED`: `"Child Dropped Off"`, body `"{student} was dropped off at {location} at {h:mm A}."`
+    - `ABSENT`: `"Marked Absent"`, body `"{student} was marked absent today ({DD MMM YYYY})."`
+  - Repeating the same status is a no-op (no extra charge, no duplicate notification).
 - **Body**:
 
   ```json
   {
-    "status": "PICKED_UP", // Must be one of: "PICKED_UP", "ABSENT", "PENDING"
+    "status": "PICKED_UP", // Must be one of: "PICKED_UP", "DROPPED", "ABSENT", "PENDING"
     "routeId": "uuid-of-the-route"
+  }
+  ```
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "pickup": { "id": "...", "status": "PICKED_UP", "pickup_method": "MANUAL", ... },
+    "fee": { "id": "...", "amount": 375, "trips_count": 1, "trips_total": 40, "status": "DUE" },
+    "charge": { "kind": "PICKUP", "amount": 375 }
   }
   ```
 
@@ -398,16 +426,10 @@ If an API request fails, the server responds with an appropriate HTTP status cod
         "month": 9,
         "year": 2026,
         "status": "PAID",
-        "paid_date": "2026-08-28T10:00:00.000Z"
-      },
-      {
-        "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-        "amount": "150.00",
-        "due_date": "2026-08-05T00:00:00.000Z",
-        "month": 8,
-        "year": 2026,
-        "status": "DUE",
-        "paid_date": null
+        "paid_date": "2026-08-28T10:00:00.000Z",
+        "trips_count": 40,
+        "trips_total": 40,
+        "per_trip_amount": 3.75
       }
     ]
   }
@@ -426,6 +448,29 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - `404 Not Found`: If student is not on driver's route, or fee does not exist.
   - `409 Conflict`: If the fee is already paid.
 - **Success Response (200 OK)**: Returns the updated fee marked as `PAID`.
+
+#### 14. Remind Parents of Due Transport Fees
+
+- **Method**: `POST`
+- **Endpoint**: `/driver/fees/remind`
+- **Description**: For each student assigned to this driver's non-COMPLETED routes that has a `DUE` fee for the specified month/year with `amount > 0`, creates a notification for the student's parent:
+  - Title: `"Transport Fee Reminder"`
+  - Body: `"{student}'s transport fee for {MonthName} {year} is Rs. {amount} ({trips_count} trips). Please pay your driver."`
+  - Deduplication: Skips if the same user, title, and body was already created today in Sri Lanka time.
+- **Request Body (JSON, Optional)**:
+  ```json
+  {
+    "month": 10,  // Optional: integer 1-12. Defaults to current SL month.
+    "year": 2026   // Optional: integer. Defaults to current SL year.
+  }
+  ```
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "sent": 3,
+    "skipped": 1
+  }
+  ```
 
 ---
 
@@ -455,6 +500,41 @@ All admin endpoints require an authenticated user with the `ADMIN` role (`Author
     "created": 5
   }
   ```
+
+#### 2. Get Pickups List
+
+- **Method**: `GET`
+- **Endpoint**: `/admin/pickups?date=YYYY-MM-DD&route_id=&student_id=&status=&page=&limit=`
+- **Description**: List pickup records with optional filters.
+- **Query Parameters**:
+  - `status`: Optional enum (`PENDING`, `PICKED_UP`, `DROPPED`, `ABSENT`).
+
+#### 3. Mark Pickup Status (Admin Override)
+
+- **Method**: `PATCH`
+- **Endpoint**: `/admin/pickups/:id/mark`
+- **Description**: Admin manual override for pickup status.
+- **Body**:
+  ```json
+  {
+    "status": "DROPPED", // "PICKED_UP" | "DROPPED" | "ABSENT" | "PENDING"
+    "force": false
+  }
+  ```
+
+#### 4. Ticket-Based Pickup
+
+- **Method**: `POST`
+- **Endpoint**: `/admin/pickups/ticket`
+- **Description**: Mark a student as `PICKED_UP` using student code and route ID.
+- **Body**:
+  ```json
+  {
+    "student_code": "STU-12345",
+    "route_id": "uuid"
+  }
+  ```
+- **Success Response**: `200 OK` if already pending and updated, `201 Created` if new row created.
 
 ---
 
