@@ -54,6 +54,7 @@ router.get('/pickups', async (req, res) => {
           select: {
             id: true,
             name: true,
+            direction: true,
             driver: {
               select: {
                 user: { select: { id: true, name: true } }
@@ -223,6 +224,7 @@ router.get('/students/:id/pickup-history', async (req, res) => {
           select: {
             id: true,
             name: true,
+            direction: true,
             driver: {
               select: {
                 user: { select: { id: true, name: true } }
@@ -251,6 +253,7 @@ router.get('/routes', async (req, res) => {
     select: {
       id: true,
       name: true,
+      direction: true,
       status: true,
       driver: {
         select: {

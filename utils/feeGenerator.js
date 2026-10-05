@@ -5,6 +5,7 @@ const prisma = new PrismaClient();
 /**
  * Ensures monthly fees are generated for active route students.
  * Idempotent, safe to call repeatedly (uses skipDuplicates).
+ * A student on two active routes produces exactly one fee per month (deduped).
  *
  * @param {Object} [options]
  * @param {string|string[]} [options.studentIds] - Optional student ID or array of student IDs to generate fees for.
@@ -23,23 +24,24 @@ async function ensureMonthlyFees({ studentIds, month, year } = {}) {
   const where = {
     route: {
       status: {
-        not: 'COMPLETED'
+        notIn: ['COMPLETED', 'ARCHIVED']
       }
     }
   };
 
   if (studentIds) {
     if (Array.isArray(studentIds)) {
-      if (studentIds.length === 0) {
+      const uniqueIds = Array.from(new Set(studentIds));
+      if (uniqueIds.length === 0) {
         return { created: 0, count: 0 };
       }
-      where.student_id = { in: studentIds };
+      where.student_id = { in: uniqueIds };
     } else {
       where.student_id = studentIds;
     }
   }
 
-  // Fetch RouteStudents whose route is not COMPLETED
+  // Fetch RouteStudents whose route is not COMPLETED and not ARCHIVED
   const routeStudents = await prisma.routeStudent.findMany({
     where,
     select: {

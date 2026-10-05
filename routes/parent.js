@@ -140,7 +140,7 @@ router.get('/fees', async (req, res) => {
   const routeStudents = await prisma.routeStudent.findMany({
     where: {
       student_id: { in: distinctStudentIds },
-      route: { status: { not: 'COMPLETED' } }
+      route: { status: { notIn: ['COMPLETED', 'ARCHIVED'] } }
     },
     select: { student_id: true, monthly_fee: true }
   });
@@ -203,6 +203,14 @@ router.patch('/fees/:feeId/pay', async (req, res) => {
     return res.status(404).json({ error: { message: 'Fee not found', code: 'NOT_FOUND' } });
   }
 
+  if (fee.status === 'PAID') {
+    return res.status(409).json({ error: { message: 'Fee is already paid', code: 'CONFLICT' } });
+  }
+
+  if (Number(fee.amount) === 0) {
+    return res.status(409).json({ error: { message: 'This month has no charges yet', code: 'NOTHING_TO_PAY' } });
+  }
+
   const now = new Date();
   const month = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(fee.due_date);
   const year = fee.due_date.getFullYear();
@@ -230,7 +238,7 @@ router.patch('/fees/:feeId/pay', async (req, res) => {
     const activeRouteStudent = await tx.routeStudent.findFirst({
       where: {
         student_id: fee.student_id,
-        route: { status: { not: 'COMPLETED' } }
+        route: { status: { notIn: ['COMPLETED', 'ARCHIVED'] } }
       },
       include: {
         route: true

@@ -65,11 +65,17 @@ model Student {
   @@map("students")
 }
 
+enum RouteDirection {
+  HOME_TO_SCHOOL
+  SCHOOL_TO_HOME
+}
+
 model Route {
   id         String         @id @default(uuid())
   driver_id  String
   driver     Driver         @relation(fields: [driver_id], references: [user_id], onDelete: Cascade)
   name       String
+  direction  RouteDirection @default(HOME_TO_SCHOOL)
   start_time String?
   end_time   String?
   status     RouteStatus    @default(SCHEDULED)
@@ -84,6 +90,7 @@ enum RouteStatus {
   SCHEDULED
   ACTIVE
   COMPLETED
+  ARCHIVED
 }
 
 model RouteStudent {

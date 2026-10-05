@@ -276,72 +276,184 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 
   ```json
   {
-    "name": "Evening Dropoff",
-    "start_time": "14:30", // Optional
-    "end_time": "16:00"    // Optional
+    "name": "Morning Pickup",
+    "direction": "HOME_TO_SCHOOL", // "HOME_TO_SCHOOL" | "SCHOOL_TO_HOME" (Defaults to "HOME_TO_SCHOOL")
+    "start_time": "06:30", // Optional
+    "end_time": "07:30"    // Optional
   }
   ```
+
+- **Success Response (201 Created)**: Returns `{ route }` including `direction`.
 
 #### 5. Get Today's Routes
 
 - **Method**: `GET`
 - **Endpoint**: `/driver/routes/today`
-- **Success Response (200 OK)**: Retrieves all routes assigned to the driver, including the list of students in each route and their pickup status for today.
+- **Description**: Retrieves all non-ARCHIVED routes for the driver, sorted with `HOME_TO_SCHOOL` routes first. Each student's `pickup_status` contains only the status record for that specific route and today's date in Sri Lanka time (preventing status bleed across morning and evening routes). Also exposes `monthly_fee` and `per_trip_amount` (`monthly_fee / 40`).
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "routes": [
+      {
+        "id": "route-uuid-1",
+        "name": "Morning Pickup",
+        "direction": "HOME_TO_SCHOOL",
+        "status": "SCHEDULED",
+        "students": [
+          {
+            "id": "rs-uuid-1",
+            "route_id": "route-uuid-1",
+            "student_id": "student-uuid-1",
+            "pickup_order": 1,
+            "monthly_fee": 15000,
+            "per_trip_amount": 375,
+            "student": {
+              "id": "student-uuid-1",
+              "name": "Little Jane",
+              "pickup_status": [
+                {
+                  "id": "pickup-uuid-1",
+                  "route_id": "route-uuid-1",
+                  "student_id": "student-uuid-1",
+                  "date": "2026-10-04T00:00:00.000Z",
+                  "status": "DROPPED"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+  ```
 
-#### 6. Add Student to Route (Via Student Code)
+#### 6. Lookup Student by Student Code
+
+- **Method**: `GET`
+- **Endpoint**: `/driver/students/by-code/:code`
+- **Description**: Pre-checks student information before adding them to a route. Returns the student details, any existing monthly fee with this driver (from an active route of the other direction), and existing route details.
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "student": {
+      "id": "student-uuid",
+      "name": "Little Jane",
+      "grade": "1",
+      "section": "A",
+      "school_name": "Springfield Elementary",
+      "pickup_location": "123 Main St"
+    },
+    "existing_monthly_fee": 15000,
+    "existing_route": {
+      "id": "route-uuid",
+      "name": "Morning Pickup",
+      "direction": "HOME_TO_SCHOOL"
+    }
+  }
+  ```
+- **Error Responses**:
+  - `404 Not Found`: If student code does not exist (`code: "STUDENT_NOT_FOUND"`).
+
+#### 7. Add Student to Route (Via Student Code)
 
 - **Method**: `POST`
 - **Endpoint**: `/driver/routes/:routeId/students`
 - **Parameters**: `:routeId` (Path) - The UUID of the route.
-- **Description**: Allows a driver to add a student to their route by providing the unique code given to them by the parent.
+- **Rules**:
+  - If student is already on an active route of a different driver: `409 Conflict` (`"Student is already assigned to an active route"`).
+  - If student is already on an active route in the SAME direction (any driver): `409 Conflict` (`"Student is already assigned to an active Home to School route"` or `"Student is already assigned to an active School to Home route"`).
+  - Fee handling: If the student is already assigned to this driver's active route in the other direction, the monthly fee is shared. If `monthly_fee` is omitted, it defaults to the existing fee. If provided and different, returns `409 Conflict` (`code: "FEE_MISMATCH"`, message: `"This student's monthly fee is already Rs. X"`). If this is the student's first active route with the driver, `monthly_fee` is required (`400 Bad Request`).
 - **Body**:
 
   ```json
   {
     "student_code": "STU-12345",
-    "monthly_fee": 150.00
+    "monthly_fee": 15000.00 // Optional if already set on other direction route
   }
   ```
 
-#### 7. Update Pickup Status
+- **Success Response (201 Created)**: Returns `{ routeStudent }`.
+
+#### 8. Update Route
+
+- **Method**: `PATCH`
+- **Endpoint**: `/driver/routes/:routeId`
+- **Parameters**: `:routeId` (Path) - The UUID of the route.
+- **Body** (All fields optional):
+  ```json
+  {
+    "name": "Updated Morning Route",
+    "start_time": "06:45",
+    "end_time": "07:45",
+    "direction": "HOME_TO_SCHOOL"
+  }
+  ```
+- **Description**: Updates route details. If `direction` is changed:
+  - Blocked with `409 Conflict` (`code: "ROUTE_HAS_HISTORY"`) if the route has any `pickup_status` rows.
+  - Blocked with `409 Conflict` (`code: "CONFLICT"`) if any assigned student would end up with two active routes of the same direction.
+- **Success Response (200 OK)**: Returns `{ route }`.
+
+#### 9. Archive Route
+
+- **Method**: `PATCH`
+- **Endpoint**: `/driver/routes/:routeId/archive`
+- **Parameters**: `:routeId` (Path) - The UUID of the route.
+- **Description**: Sets route status to `ARCHIVED`. Does not change pickups or fee records.
+- **Success Response (200 OK)**: Returns `{ route }`.
+
+#### 10. Delete Route
+
+- **Method**: `DELETE`
+- **Endpoint**: `/driver/routes/:routeId`
+- **Parameters**: `:routeId` (Path) - The UUID of the route.
+- **Description**: Deletes a route and its student associations.
+  - Blocked with `409 Conflict` (`code: "ROUTE_HAS_HISTORY"`, `"Route has pickup history. Archive it instead."`) if the route has any pickup history records.
+- **Success Response (200 OK)**: Returns `{ success: true }`.
+
+#### 11. Update Pickup Status
 
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/pickup/:studentId`
 - **Parameters**: `:studentId` (Path) - The UUID of the student.
-- **Description**: Records or updates the student's pickup status for today on a specific route within a single transaction using the per-trip fee engine.
+- **Description**: Records or updates the student's pickup status for today on a specific route within a single transaction using the revised per-trip fee engine.
   - Allowed statuses: `PENDING`, `PICKED_UP`, `DROPPED`, `ABSENT`.
   - Transition rule: `DROPPED` is only allowed when current status is `PICKED_UP` (or already `DROPPED`). Attempting `DROPPED` from `PENDING` or `ABSENT` returns `409 Conflict` with code `PICKUP_REQUIRED`.
   - Charges:
-    - Moving to `PICKED_UP` adds 1 `PICKUP` charge (`round(monthly_fee / 40, 2)`).
-    - Moving to `DROPPED` adds 1 `DROP` charge (`round(monthly_fee / 40, 2)`).
-    - Moving from `DROPPED` back to `PICKED_UP` deletes the `DROP` charge.
-    - Moving to `PENDING` or `ABSENT` deletes both charges for that day.
+    - Moving to `PICKED_UP` records pickup and does NOT add a charge.
+    - Moving to `DROPPED` adds 1 completed trip charge (`round(monthly_fee / 40, 2)`).
+    - Reversal `DROPPED` -> `PICKED_UP`, `PENDING` or `ABSENT` deletes the row's charge and resyncs the monthly fee.
+    - `PICKED_UP` -> anything never touches charges.
     - Fee amount = `MIN(SUM(trip_charges), monthly_fee)`, `trips_count = COUNT(trip_charges)`.
     - Maximum 40 charges per monthly fee (subsequent charges silently skipped).
-    - A `PAID` fee is locked (status and notifications still apply, but no charges are added/removed).
-  - Notifications: Automatically created for parent only when status changes:
-    - `PICKED_UP`: `"Child Picked Up"`, body `"{student} was picked up from {location} at {h:mm A}."`
-    - `DROPPED`: `"Child Dropped Off"`, body `"{student} was dropped off at {location} at {h:mm A}."`
+    - A `PAID` fee is locked (status and notifications still apply, but charges cannot be added or removed).
+  - Notifications: Automatically sent to the parent on actual status changes:
+    - `HOME_TO_SCHOOL`:
+      - `PICKED_UP`: `"Child Picked Up"`, body `"{student} was picked up from {pickup_location} at {time}."`
+      - `DROPPED`: `"Child Dropped Off"`, body `"{student} was dropped off at {school_name} at {time}."`
+    - `SCHOOL_TO_HOME`:
+      - `PICKED_UP`: `"Child Picked Up"`, body `"{student} was picked up from {school_name} at {time}."`
+      - `DROPPED`: `"Child Dropped Off"`, body `"{student} was dropped off at {pickup_location} at {time}."`
+    - Fallbacks: If `pickup_location` is empty, `"home"` is used. If `school_name` is empty, `"school"` is used. Time is formatted in Asia/Colombo time (e.g. `7:15 AM`).
     - `ABSENT`: `"Marked Absent"`, body `"{student} was marked absent today ({DD MMM YYYY})."`
   - Repeating the same status is a no-op (no extra charge, no duplicate notification).
 - **Body**:
 
   ```json
   {
-    "status": "PICKED_UP", // Must be one of: "PICKED_UP", "DROPPED", "ABSENT", "PENDING"
+    "status": "DROPPED", // Must be one of: "PICKED_UP", "DROPPED", "ABSENT", "PENDING"
     "routeId": "uuid-of-the-route"
   }
   ```
 - **Success Response (200 OK)**:
   ```json
   {
-    "pickup": { "id": "...", "status": "PICKED_UP", "pickup_method": "MANUAL", ... },
+    "pickup": { "id": "...", "status": "DROPPED", "pickup_method": "MANUAL", ... },
     "fee": { "id": "...", "amount": 375, "trips_count": 1, "trips_total": 40, "status": "DUE" },
-    "charge": { "kind": "PICKUP", "amount": 375 }
+    "charge": { "kind": "DROP", "amount": 375 }
   }
   ```
 
-#### 8. Remove Student from Route
+#### 12. Remove Student from Route
 
 - **Method**: `DELETE`
 - **Endpoint**: `/driver/routes/:routeId/students/:studentId`
@@ -349,22 +461,22 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - `:routeId` (Path) - The UUID of the route.
   - `:studentId` (Path) - The UUID of the student.
 
-#### 9. Get Driver Notifications
+#### 13. Get Driver Notifications
 
 - **Method**: `GET`
 - **Endpoint**: `/driver/notifications`
 
-#### 10. Read Driver Notification
+#### 14. Read Driver Notification
 
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/notifications/:id/read`
 - **Parameters**: `:id` (Path) - The UUID of the notification.
 
-#### 11. Get Pickup History
+#### 15. Get Pickup History
 
 - **Method**: `GET`
 - **Endpoint**: `/driver/history?date=YYYY-MM-DD&route_id=&page=&limit=`
-- **Description**: Returns paginated pickup history for all routes belonging to the authenticated driver. Supports optional date and route filtering.
+- **Description**: Returns paginated pickup history for all routes belonging to the authenticated driver. Supports optional date and route filtering. Each item includes `route.direction`.
 - **Query Parameters**:
   - `date` (Query, Optional): Format `YYYY-MM-DD`. Filters records by pickup date.
   - `route_id` (Query, Optional): UUID of the route.
@@ -402,7 +514,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   }
   ```
 
-#### 12. Get Student Fee Payment Status
+#### 16. Get Student Fee Payment Status
 
 - **Method**: `GET`
 - **Endpoint**: `/driver/students/:studentId/fees`
@@ -435,7 +547,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   }
   ```
 
-#### 13. Pay Student Fee (Collect Payment)
+#### 17. Pay Student Fee (Collect Payment)
 
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/students/:studentId/fees/:feeId/pay`
@@ -449,7 +561,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - `409 Conflict`: If the fee is already paid.
 - **Success Response (200 OK)**: Returns the updated fee marked as `PAID`.
 
-#### 14. Remind Parents of Due Transport Fees
+#### 18. Remind Parents of Due Transport Fees
 
 - **Method**: `POST`
 - **Endpoint**: `/driver/fees/remind`

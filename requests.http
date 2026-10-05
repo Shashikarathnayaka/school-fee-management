@@ -150,42 +150,100 @@ Authorization: Bearer {{driverToken}}
   "is_on_duty": true
 }
 
-### Create Route
-# @name createRoute
+### Create Morning Route (HOME_TO_SCHOOL)
+# @name createMorningRoute
+POST {{baseUrl}}/driver/routes
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "name": "Morning Pickup",
+  "direction": "HOME_TO_SCHOOL",
+  "start_time": "06:30",
+  "end_time": "07:30"
+}
+
+@morningRouteId = {{createMorningRoute.response.body.route.id}}
+
+### Create Evening Route (SCHOOL_TO_HOME)
+# @name createEveningRoute
 POST {{baseUrl}}/driver/routes
 Content-Type: application/json
 Authorization: Bearer {{driverToken}}
 
 {
   "name": "Evening Dropoff",
+  "direction": "SCHOOL_TO_HOME",
   "start_time": "14:30",
   "end_time": "16:00"
 }
 
-@routeId = {{createRoute.response.body.route.id}}
+@eveningRouteId = {{createEveningRoute.response.body.route.id}}
+@routeId = {{createMorningRoute.response.body.route.id}}
 
-### Add Student to Route (using Student Code)
-POST {{baseUrl}}/driver/routes/{{routeId}}/students
+### Lookup Student by Code
+GET {{baseUrl}}/driver/students/by-code/{{studentCode}}
+Authorization: Bearer {{driverToken}}
+
+### Add Student to Morning Route (with monthly_fee)
+POST {{baseUrl}}/driver/routes/{{morningRouteId}}/students
 Content-Type: application/json
 Authorization: Bearer {{driverToken}}
 
 {
   "student_code": "{{studentCode}}",
-  "monthly_fee": 150.00
+  "monthly_fee": 15000.00
 }
+
+### Add Student to Evening Route (omits monthly_fee to inherit existing fee)
+POST {{baseUrl}}/driver/routes/{{eveningRouteId}}/students
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "student_code": "{{studentCode}}"
+}
+
+### Update Route (Name, Times, Direction)
+PATCH {{baseUrl}}/driver/routes/{{morningRouteId}}
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "name": "Morning Pickup Route (Updated)",
+  "start_time": "06:45"
+}
+
+### Archive Route
+PATCH {{baseUrl}}/driver/routes/{{morningRouteId}}/archive
+Authorization: Bearer {{driverToken}}
+
+### Delete Route (only if no pickup history)
+DELETE {{baseUrl}}/driver/routes/{{eveningRouteId}}
+Authorization: Bearer {{driverToken}}
 
 ### Get Today's Routes
 GET {{baseUrl}}/driver/routes/today
 Authorization: Bearer {{driverToken}}
 
-### Update Pickup Status (PICKED_UP or DROPPED)
+### Update Pickup Status (PICKED_UP - no charge)
 PATCH {{baseUrl}}/driver/pickup/{{studentId}}
 Content-Type: application/json
 Authorization: Bearer {{driverToken}}
 
 {
   "status": "PICKED_UP",
-  "routeId": "{{routeId}}"
+  "routeId": "{{morningRouteId}}"
+}
+
+### Update Pickup Status (DROPPED - charges 1 completed trip: monthly_fee/40)
+PATCH {{baseUrl}}/driver/pickup/{{studentId}}
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "status": "DROPPED",
+  "routeId": "{{morningRouteId}}"
 }
 
 ### Remind Parents of Due Transport Fees

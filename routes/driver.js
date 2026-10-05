@@ -15,6 +15,7 @@ router.use(requireAuth, requireRole('DRIVER'));
 // POST /driver/routes (create a route)
 const createRouteSchema = z.object({
   name: z.string().min(2),
+  direction: z.enum(['HOME_TO_SCHOOL', 'SCHOOL_TO_HOME']).default('HOME_TO_SCHOOL'),
   start_time: z.string().optional(),
   end_time: z.string().optional()
 });
@@ -35,23 +36,67 @@ router.get('/routes/today', async (req, res) => {
   const today = slToday();
 
   const routes = await prisma.route.findMany({
-    where: { driver_id: req.user.id },
+    where: {
+      driver_id: req.user.id,
+      status: { not: 'ARCHIVED' }
+    },
     include: {
       students: {
         include: {
-          student: {
-            include: {
-              pickup_status: {
-                where: { date: today }
-              }
-            }
-          }
+          student: true
         },
         orderBy: { pickup_order: 'asc' }
       }
     }
   });
-  res.json({ routes });
+
+  const routeIds = routes.map(r => r.id);
+
+  let pickups = [];
+  if (routeIds.length > 0) {
+    pickups = await prisma.pickupStatus.findMany({
+      where: {
+        route_id: { in: routeIds },
+        date: today
+      }
+    });
+  }
+
+  const pickupMap = new Map();
+  for (const p of pickups) {
+    pickupMap.set(`${p.route_id}_${p.student_id}`, p);
+  }
+
+  const formattedRoutes = routes.map(route => {
+    const formattedStudents = route.students.map(rs => {
+      const mFee = Number(rs.monthly_fee);
+      const perTrip = Number((Math.round((mFee / 40) * 100) / 100).toFixed(2));
+      const pickupRow = pickupMap.get(`${rs.route_id}_${rs.student_id}`);
+      return {
+        ...rs,
+        monthly_fee: mFee,
+        per_trip_amount: perTrip,
+        student: {
+          ...rs.student,
+          pickup_status: pickupRow ? [pickupRow] : []
+        }
+      };
+    });
+
+    return {
+      ...route,
+      students: formattedStudents
+    };
+  });
+
+  // Order HOME_TO_SCHOOL first
+  formattedRoutes.sort((a, b) => {
+    if (a.direction === 'HOME_TO_SCHOOL' && b.direction !== 'HOME_TO_SCHOOL') return -1;
+    if (a.direction !== 'HOME_TO_SCHOOL' && b.direction === 'HOME_TO_SCHOOL') return 1;
+    return 0;
+  });
+
+  res.json({ routes: formattedRoutes });
 });
 
 // PATCH /driver/status - toggle on-duty/off-duty
@@ -73,7 +118,10 @@ router.patch('/status', async (req, res) => {
     if (current.is_on_duty === true && is_on_duty === false) {
       const today = slToday();
       const routes = await tx.route.findMany({
-        where: { driver_id: req.user.id },
+        where: {
+          driver_id: req.user.id,
+          status: { notIn: ['COMPLETED', 'ARCHIVED'] }
+        },
         select: { id: true }
       });
       const routeIds = routes.map(r => r.id);
@@ -91,10 +139,62 @@ router.patch('/status', async (req, res) => {
   res.json({ driver: result });
 });
 
-// POST /driver/routes/:routeId/students
+// GET /driver/students/by-code/:code (DRIVER)
+router.get('/students/by-code/:code', async (req, res) => {
+  const { code } = req.params;
+
+  const student = await prisma.student.findUnique({
+    where: { student_code: code },
+    select: {
+      id: true,
+      name: true,
+      grade: true,
+      section: true,
+      school_name: true,
+      pickup_location: true
+    }
+  });
+
+  if (!student) {
+    return res.status(404).json({
+      error: { message: 'Student not found', code: 'STUDENT_NOT_FOUND' }
+    });
+  }
+
+  const activeRouteStudent = await prisma.routeStudent.findFirst({
+    where: {
+      student_id: student.id,
+      route: {
+        driver_id: req.user.id,
+        status: { notIn: ['COMPLETED', 'ARCHIVED'] }
+      }
+    },
+    include: {
+      route: {
+        select: {
+          id: true,
+          name: true,
+          direction: true
+        }
+      }
+    }
+  });
+
+  res.json({
+    student,
+    existing_monthly_fee: activeRouteStudent ? Number(activeRouteStudent.monthly_fee) : null,
+    existing_route: activeRouteStudent ? {
+      id: activeRouteStudent.route.id,
+      name: activeRouteStudent.route.name,
+      direction: activeRouteStudent.route.direction
+    } : null
+  });
+});
+
+// POST /driver/routes/:routeId/students { student_code, monthly_fee? }
 const addStudentToRouteSchema = z.object({
   student_code: z.string(),
-  monthly_fee: z.number().positive()
+  monthly_fee: z.number().positive().optional()
 });
 
 router.post('/routes/:routeId/students', async (req, res) => {
@@ -102,7 +202,9 @@ router.post('/routes/:routeId/students', async (req, res) => {
   const { student_code, monthly_fee } = addStudentToRouteSchema.parse(req.body);
 
   // Verify driver owns the route
-  const route = await prisma.route.findFirst({ where: { id: routeId, driver_id: req.user.id } });
+  const route = await prisma.route.findFirst({
+    where: { id: routeId, driver_id: req.user.id }
+  });
   if (!route) {
     return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
   }
@@ -113,16 +215,83 @@ router.post('/routes/:routeId/students', async (req, res) => {
     return res.status(404).json({ error: { message: 'Student code not found', code: 'NOT_FOUND' } });
   }
 
-  // Check if student is already in an active route
-  const activeRoute = await prisma.routeStudent.findFirst({
+  // 1. If student has an active RouteStudent on a different driver's route -> 409 CONFLICT
+  const otherDriverActiveRoute = await prisma.routeStudent.findFirst({
     where: {
       student_id: student.id,
-      route: { status: { not: 'COMPLETED' } }
+      route: {
+        driver_id: { not: req.user.id },
+        status: { notIn: ['COMPLETED', 'ARCHIVED'] }
+      }
     }
   });
 
-  if (activeRoute) {
-    return res.status(409).json({ error: { message: 'Student is already assigned to an active route', code: 'CONFLICT' } });
+  if (otherDriverActiveRoute) {
+    return res.status(409).json({
+      error: { message: 'Student is already assigned to an active route', code: 'CONFLICT' }
+    });
+  }
+
+  // 2. If student already has an active route of the SAME direction (any driver) -> 409 CONFLICT
+  const sameDirectionActiveRoute = await prisma.routeStudent.findFirst({
+    where: {
+      student_id: student.id,
+      route: {
+        direction: route.direction,
+        status: { notIn: ['COMPLETED', 'ARCHIVED'] }
+      }
+    }
+  });
+
+  if (sameDirectionActiveRoute) {
+    const dirLabel = route.direction === 'HOME_TO_SCHOOL' ? 'Home to School' : 'School to Home';
+    return res.status(409).json({
+      error: {
+        message: `Student is already assigned to an active ${dirLabel} route`,
+        code: 'CONFLICT'
+      }
+    });
+  }
+
+  // 3. Check for active RouteStudent with this driver on the other direction
+  const otherDirection = route.direction === 'HOME_TO_SCHOOL' ? 'SCHOOL_TO_HOME' : 'HOME_TO_SCHOOL';
+  const existingActiveRoute = await prisma.routeStudent.findFirst({
+    where: {
+      student_id: student.id,
+      route: {
+        driver_id: req.user.id,
+        direction: otherDirection,
+        status: { notIn: ['COMPLETED', 'ARCHIVED'] }
+      }
+    }
+  });
+
+  let finalMonthlyFee;
+  if (existingActiveRoute) {
+    const existingFeeNum = Number(existingActiveRoute.monthly_fee);
+    if (monthly_fee === undefined || monthly_fee === null) {
+      finalMonthlyFee = existingFeeNum;
+    } else {
+      if (monthly_fee !== existingFeeNum) {
+        return res.status(409).json({
+          error: {
+            message: `This student's monthly fee is already Rs. ${existingFeeNum}`,
+            code: 'FEE_MISMATCH'
+          }
+        });
+      }
+      finalMonthlyFee = monthly_fee;
+    }
+  } else {
+    if (monthly_fee === undefined || monthly_fee === null) {
+      return res.status(400).json({
+        error: {
+          message: 'Monthly fee is required',
+          code: 'VALIDATION_ERROR'
+        }
+      });
+    }
+    finalMonthlyFee = monthly_fee;
   }
 
   // Get max pickup order
@@ -137,7 +306,7 @@ router.post('/routes/:routeId/students', async (req, res) => {
       route_id: routeId,
       student_id: student.id,
       pickup_order,
-      monthly_fee
+      monthly_fee: finalMonthlyFee
     },
     include: { student: true }
   });
@@ -166,6 +335,132 @@ router.delete('/routes/:routeId/students/:studentId', async (req, res) => {
   }
 
   res.json({ success: true });
+});
+
+// PATCH /driver/routes/:routeId { name?, start_time?, end_time?, direction? }
+const updateRouteSchema = z.object({
+  name: z.string().min(2).optional(),
+  start_time: z.string().optional(),
+  end_time: z.string().optional(),
+  direction: z.enum(['HOME_TO_SCHOOL', 'SCHOOL_TO_HOME']).optional()
+});
+
+router.patch('/routes/:routeId', async (req, res) => {
+  const { routeId } = req.params;
+  const data = updateRouteSchema.parse(req.body);
+
+  const route = await prisma.route.findFirst({
+    where: { id: routeId, driver_id: req.user.id }
+  });
+
+  if (!route) {
+    return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
+  }
+
+  if (data.direction && data.direction !== route.direction) {
+    // Check if the route has any pickup_status rows
+    const historyCount = await prisma.pickupStatus.count({
+      where: { route_id: routeId }
+    });
+    if (historyCount > 0) {
+      return res.status(409).json({
+        error: {
+          message: 'Route has pickup history. Direction cannot be changed.',
+          code: 'ROUTE_HAS_HISTORY'
+        }
+      });
+    }
+
+    // Check if a student would end up on two routes of the same direction
+    const routeStudents = await prisma.routeStudent.findMany({
+      where: { route_id: routeId },
+      select: { student_id: true }
+    });
+    const studentIds = routeStudents.map(rs => rs.student_id);
+
+    if (studentIds.length > 0) {
+      const conflict = await prisma.routeStudent.findFirst({
+        where: {
+          student_id: { in: studentIds },
+          route_id: { not: routeId },
+          route: {
+            direction: data.direction,
+            status: { notIn: ['COMPLETED', 'ARCHIVED'] }
+          }
+        },
+        include: { student: true }
+      });
+
+      if (conflict) {
+        const dirLabel = data.direction === 'HOME_TO_SCHOOL' ? 'Home to School' : 'School to Home';
+        return res.status(409).json({
+          error: {
+            message: `Student is already assigned to an active ${dirLabel} route`,
+            code: 'CONFLICT'
+          }
+        });
+      }
+    }
+  }
+
+  const updated = await prisma.route.update({
+    where: { id: routeId },
+    data
+  });
+
+  res.json({ route: updated });
+});
+
+// DELETE /driver/routes/:routeId
+router.delete('/routes/:routeId', async (req, res) => {
+  const { routeId } = req.params;
+
+  const route = await prisma.route.findFirst({
+    where: { id: routeId, driver_id: req.user.id }
+  });
+
+  if (!route) {
+    return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
+  }
+
+  const historyCount = await prisma.pickupStatus.count({
+    where: { route_id: routeId }
+  });
+
+  if (historyCount > 0) {
+    return res.status(409).json({
+      error: {
+        message: 'Route has pickup history. Archive it instead.',
+        code: 'ROUTE_HAS_HISTORY'
+      }
+    });
+  }
+
+  await prisma.route.delete({
+    where: { id: routeId }
+  });
+
+  res.json({ success: true });
+});
+
+// PATCH /driver/routes/:routeId/archive
+router.patch('/routes/:routeId/archive', async (req, res) => {
+  const { routeId } = req.params;
+
+  const route = await prisma.route.findFirst({
+    where: { id: routeId, driver_id: req.user.id }
+  });
+
+  if (!route) {
+    return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
+  }
+
+  const updated = await prisma.route.update({
+    where: { id: routeId },
+    data: { status: 'ARCHIVED' }
+  });
+
+  res.json({ route: updated });
 });
 
 // PATCH /driver/pickup/:studentId
@@ -274,7 +569,8 @@ router.get('/history', async (req, res) => {
         route: {
           select: {
             id: true,
-            name: true
+            name: true,
+            direction: true
           }
         }
       },
@@ -363,13 +659,25 @@ const studentFeesParamsSchema = z.object({
 router.get('/students/:studentId/fees', async (req, res) => {
   const { studentId } = studentFeesParamsSchema.parse(req.params);
 
-  // Verify the student is on a route owned by this driver
-  const assignment = await prisma.routeStudent.findFirst({
+  // Verify the student is on a route owned by this driver (active first, or any)
+  let assignment = await prisma.routeStudent.findFirst({
     where: {
       student_id: studentId,
-      route: { driver_id: req.user.id }
+      route: {
+        driver_id: req.user.id,
+        status: { notIn: ['COMPLETED', 'ARCHIVED'] }
+      }
     }
   });
+
+  if (!assignment) {
+    assignment = await prisma.routeStudent.findFirst({
+      where: {
+        student_id: studentId,
+        route: { driver_id: req.user.id }
+      }
+    });
+  }
 
   if (!assignment) {
     return res.status(404).json({ error: { message: 'Student not found on any of your routes', code: 'NOT_FOUND' } });
@@ -442,6 +750,10 @@ router.patch('/students/:studentId/fees/:feeId/pay', async (req, res) => {
     return res.status(409).json({ error: { message: 'Fee is already paid', code: 'CONFLICT' } });
   }
 
+  if (Number(fee.amount) === 0) {
+    return res.status(409).json({ error: { message: 'This month has no charges yet', code: 'NOTHING_TO_PAY' } });
+  }
+
   const driverUser = await prisma.user.findUnique({
     where: { id: req.user.id },
     select: { name: true }
@@ -502,7 +814,7 @@ router.post('/fees/remind', async (req, res) => {
     where: {
       route: {
         driver_id: req.user.id,
-        status: { not: 'COMPLETED' }
+        status: { notIn: ['COMPLETED', 'ARCHIVED'] }
       }
     },
     include: {
@@ -548,7 +860,7 @@ router.post('/fees/remind', async (req, res) => {
     const formattedAmount = Number(fee.amount).toLocaleString('en-US');
     const tripsCount = fee.trips_count ?? 0;
     const title = 'Transport Fee Reminder';
-    const body = `${student.name}'s transport fee for ${monthName} ${targetYear} is Rs. ${formattedAmount} (${tripsCount} trips). Please pay your driver.`;
+    const body = `${student.name}'s transport fee for ${monthName} ${targetYear} is Rs. ${formattedAmount} (${tripsCount} ${tripsCount === 1 ? 'trip' : 'trips'}). Please pay your driver.`;
 
     const existingNotif = await prisma.notification.findFirst({
       where: {
@@ -577,4 +889,3 @@ router.post('/fees/remind', async (req, res) => {
 });
 
 module.exports = router;
-

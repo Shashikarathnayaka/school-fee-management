@@ -5,9 +5,40 @@ const { HttpError } = require('./httpError');
 const prisma = new PrismaClient();
 
 /**
+ * Resyncs a fee row from its associated trip_charges.
+ * Fee.amount = MIN(SUM(trip_charges.amount), monthly_fee)
+ * Fee.trips_count = COUNT(trip_charges)
+ *
+ * @param {Object} tx - Prisma transaction client
+ * @param {string} feeId - Fee UUID
+ * @param {number|Decimal|string} monthlyFee - Student's monthly fee
+ * @returns {Promise<Object>}
+ */
+async function syncFee(tx, feeId, monthlyFee) {
+  const agg = await tx.tripCharge.aggregate({
+    where: { fee_id: feeId },
+    _sum: { amount: true },
+    _count: { id: true }
+  });
+
+  const totalSum = agg._sum.amount ? new Prisma.Decimal(agg._sum.amount) : new Prisma.Decimal(0);
+  const monthlyFeeDec = new Prisma.Decimal(monthlyFee);
+  const cappedAmount = totalSum.greaterThan(monthlyFeeDec) ? monthlyFeeDec : totalSum;
+  const tripsCount = agg._count.id;
+
+  return await tx.fee.update({
+    where: { id: feeId },
+    data: {
+      amount: cappedAmount,
+      trips_count: tripsCount
+    }
+  });
+}
+
+/**
  * Applies a pickup status change for a student on a route.
  * Handles validation, pickup record update, fee creation/resync,
- * trip charges, and parent notifications within a single transaction.
+ * trip charges (on DROPPED only), and parent notifications within a single transaction.
  *
  * @param {Object} params
  * @param {string} params.studentId
@@ -22,8 +53,8 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
     const today = slToday();
     const { month, year } = slMonthYear();
 
-    // 1 & 2. Load student, RouteStudent, and existing pickup row in parallel
-    const [student, routeStudent, existing, existingFee] = await Promise.all([
+    // 1 & 2. Load student, RouteStudent, route, and existing pickup row in parallel
+    const [student, routeStudent, route, existing, existingFee] = await Promise.all([
       tx.student.findUnique({
         where: { id: studentId },
         select: {
@@ -31,6 +62,7 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
           name: true,
           parent_id: true,
           pickup_location: true,
+          school_name: true,
           student_code: true
         }
       }),
@@ -38,6 +70,14 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
         where: {
           route_id: routeId,
           student_id: studentId
+        }
+      }),
+      tx.route.findUnique({
+        where: { id: routeId },
+        select: {
+          id: true,
+          name: true,
+          direction: true
         }
       }),
       tx.pickupStatus.findUnique({
@@ -64,7 +104,7 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
       throw new HttpError(404, 'Student not found', 'NOT_FOUND');
     }
 
-    if (!routeStudent) {
+    if (!routeStudent || !route) {
       throw new HttpError(409, 'Student is not assigned to this route', 'NOT_ON_ROUTE');
     }
 
@@ -92,7 +132,7 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
         data: pickupData,
         include: {
           student: { select: { id: true, name: true, student_code: true } },
-          route: { select: { id: true, name: true } }
+          route: { select: { id: true, name: true, direction: true } }
         }
       });
     } else {
@@ -105,7 +145,7 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
         },
         include: {
           student: { select: { id: true, name: true, student_code: true } },
-          route: { select: { id: true, name: true } }
+          route: { select: { id: true, name: true, direction: true } }
         }
       });
     }
@@ -153,46 +193,7 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
       const monthlyFeeNum = Number(routeStudent.monthly_fee);
       const perTripAmount = Number((Math.round((monthlyFeeNum / 40) * 100) / 100).toFixed(2));
 
-      if (status === 'PICKED_UP') {
-        if (previousStatus === 'DROPPED') {
-          // DROPPED -> PICKED_UP deletes the DROP charge
-          await tx.tripCharge.deleteMany({
-            where: {
-              pickup_id: pickup.id,
-              kind: 'DROP'
-            }
-          });
-        } else {
-          // PENDING/ABSENT/null -> PICKED_UP adds one PICKUP charge if not already present
-          const existingPickupCharge = await tx.tripCharge.findUnique({
-            where: {
-              pickup_id_kind: {
-                pickup_id: pickup.id,
-                kind: 'PICKUP'
-              }
-            }
-          });
-
-          if (!existingPickupCharge) {
-            const currentChargesCount = await tx.tripCharge.count({
-              where: { fee_id: fee.id }
-            });
-
-            // Never more than 40 charges per fee (extra charges skipped silently)
-            if (currentChargesCount < 40) {
-              await tx.tripCharge.create({
-                data: {
-                  pickup_id: pickup.id,
-                  fee_id: fee.id,
-                  kind: 'PICKUP',
-                  amount: perTripAmount
-                }
-              });
-              charge = { kind: 'PICKUP', amount: perTripAmount };
-            }
-          }
-        }
-      } else if (status === 'DROPPED') {
+      if (status === 'DROPPED') {
         // Becoming DROPPED adds one DROP charge
         const existingDropCharge = await tx.tripCharge.findUnique({
           where: {
@@ -220,54 +221,43 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
             charge = { kind: 'DROP', amount: perTripAmount };
           }
         }
-      } else if (status === 'PENDING' || status === 'ABSENT') {
-        // PICKED_UP or DROPPED -> PENDING or ABSENT deletes both charges of that row
+
+        fee = await syncFee(tx, fee.id, routeStudent.monthly_fee);
+      } else if (previousStatus === 'DROPPED') {
+        // DROPPED -> PICKED_UP, PENDING or ABSENT deletes the row's charge and resyncs the fee
         await tx.tripCharge.deleteMany({
           where: { pickup_id: pickup.id }
         });
+        fee = await syncFee(tx, fee.id, routeStudent.monthly_fee);
       }
-
-      // Resync fee: Fee.amount = MIN(SUM(trip_charges.amount), monthly_fee), Fee.trips_count = COUNT(trip_charges)
-      const agg = await tx.tripCharge.aggregate({
-        where: { fee_id: fee.id },
-        _sum: { amount: true },
-        _count: { id: true }
-      });
-
-      const totalSum = agg._sum.amount ? new Prisma.Decimal(agg._sum.amount) : new Prisma.Decimal(0);
-      const monthlyFeeDec = new Prisma.Decimal(routeStudent.monthly_fee);
-      const cappedAmount = totalSum.greaterThan(monthlyFeeDec) ? monthlyFeeDec : totalSum;
-      const tripsCount = agg._count.id;
-
-      fee = await tx.fee.update({
-        where: { id: fee.id },
-        data: {
-          amount: cappedAmount,
-          trips_count: tripsCount
-        }
-      });
+      // Note: PICKED_UP -> anything never touches charges (it has none).
     }
 
     // 7. Notification for parent when status actually changed to PICKED_UP, DROPPED, or ABSENT
     const now = new Date();
     const timeFormatted = formatSLTime(now);
-    const loc = (student.pickup_location && student.pickup_location.trim().length > 0)
+    const pickupLoc = (student.pickup_location && student.pickup_location.trim().length > 0)
       ? student.pickup_location.trim()
-      : null;
+      : 'home';
+    const schoolName = (student.school_name && student.school_name.trim().length > 0)
+      ? student.school_name.trim()
+      : 'school';
 
     let notifTitle = null;
     let notifBody = null;
 
+    const isHomeToSchool = route.direction === 'HOME_TO_SCHOOL';
+
     if (status === 'PICKED_UP') {
       notifTitle = 'Child Picked Up';
-      notifBody = loc
-        ? `${student.name} was picked up from ${loc} at ${timeFormatted}.`
-        : `${student.name} was picked up at ${timeFormatted}.`;
+      notifBody = isHomeToSchool
+        ? `${student.name} was picked up from ${pickupLoc} at ${timeFormatted}.`
+        : `${student.name} was picked up from ${schoolName} at ${timeFormatted}.`;
     } else if (status === 'DROPPED') {
       notifTitle = 'Child Dropped Off';
-      notifBody = loc
-        ? `${student.name} was dropped off at ${loc} at ${timeFormatted}.`
-        : `${student.name} was dropped off at ${timeFormatted}.`;
+      notifBody = isHomeToSchool
+        ? `${student.name} was dropped off at ${schoolName} at ${timeFormatted}.`
+        : `${student.name} was dropped off at ${pickupLoc} at ${timeFormatted}.`;
     } else if (status === 'ABSENT') {
       notifTitle = 'Marked Absent';
       const dateFormatted = new Intl.DateTimeFormat('en-GB', {
@@ -300,4 +290,4 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
   });
 }
 
-module.exports = { applyPickupStatus };
+module.exports = { applyPickupStatus, syncFee };
