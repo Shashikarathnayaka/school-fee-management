@@ -6,7 +6,7 @@ const prisma = new PrismaClient();
 
 /**
  * Resyncs a fee row from its associated trip_charges.
- * Fee.amount = MIN(SUM(trip_charges.amount), monthly_fee)
+ * Fee.amount = MIN(SUM(trip_charges.amount), monthly_fee - sum_of_other_cycles)
  * Fee.trips_count = COUNT(trip_charges)
  *
  * @param {Object} tx - Prisma transaction client
@@ -15,15 +15,33 @@ const prisma = new PrismaClient();
  * @returns {Promise<Object>}
  */
 async function syncFee(tx, feeId, monthlyFee) {
+  const current = await tx.fee.findUnique({
+    where: { id: feeId },
+    select: { student_id: true, month: true, year: true }
+  });
+
   const agg = await tx.tripCharge.aggregate({
     where: { fee_id: feeId },
     _sum: { amount: true },
     _count: { id: true }
   });
 
+  // Other cycles (e.g. an already-paid one) of the same month use up part of the monthly fee
+  const others = await tx.fee.aggregate({
+    where: {
+      student_id: current.student_id,
+      month: current.month,
+      year: current.year,
+      id: { not: feeId }
+    },
+    _sum: { amount: true }
+  });
+
   const totalSum = agg._sum.amount ? new Prisma.Decimal(agg._sum.amount) : new Prisma.Decimal(0);
-  const monthlyFeeDec = new Prisma.Decimal(monthlyFee);
-  const cappedAmount = totalSum.greaterThan(monthlyFeeDec) ? monthlyFeeDec : totalSum;
+  const othersSum = others._sum.amount ? new Prisma.Decimal(others._sum.amount) : new Prisma.Decimal(0);
+  let remaining = new Prisma.Decimal(monthlyFee).minus(othersSum);
+  if (remaining.lessThan(0)) remaining = new Prisma.Decimal(0);
+  const cappedAmount = totalSum.greaterThan(remaining) ? remaining : totalSum;
   const tripsCount = agg._count.id;
 
   return await tx.fee.update({
@@ -31,6 +49,40 @@ async function syncFee(tx, feeId, monthlyFee) {
     data: {
       amount: cappedAmount,
       trips_count: tripsCount
+    }
+  });
+}
+
+/**
+ * Returns the latest open (non-PAID) fee for the given student/month/year,
+ * or creates a new cycle if the latest is already PAID (or none exists).
+ *
+ * @param {Object} tx - Prisma transaction client
+ * @param {string} studentId
+ * @param {number} month
+ * @param {number} year
+ * @returns {Promise<Object>}
+ */
+async function getOrCreateOpenFee(tx, studentId, month, year) {
+  const latest = await tx.fee.findFirst({
+    where: { student_id: studentId, month, year },
+    orderBy: { cycle: 'desc' }
+  });
+
+  if (latest && latest.status !== 'PAID') {
+    return latest;
+  }
+
+  return await tx.fee.create({
+    data: {
+      student_id: studentId,
+      amount: 0,
+      trips_count: 0,
+      status: 'DUE',
+      due_date: new Date(Date.UTC(year, month, 5, 0, 0, 0)),
+      month,
+      year,
+      cycle: latest ? latest.cycle + 1 : 1
     }
   });
 }
@@ -89,14 +141,9 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
           }
         }
       }),
-      tx.fee.findUnique({
-        where: {
-          student_id_month_year: {
-            student_id: studentId,
-            month,
-            year
-          }
-        }
+      tx.fee.findFirst({
+        where: { student_id: studentId, month, year },
+        orderBy: { cycle: 'desc' }
       })
     ]);
 
@@ -170,68 +217,57 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
       };
     }
 
-    // Find or create fee if not found
+    // Make sure the month has at least one fee row (cycle 1)
     if (!fee) {
-      const nextDueDate = new Date(Date.UTC(year, month, 5, 0, 0, 0));
-      fee = await tx.fee.create({
-        data: {
-          student_id: studentId,
-          amount: 0,
-          trips_count: 0,
-          status: 'DUE',
-          due_date: nextDueDate,
-          month,
-          year
-        }
-      });
+      fee = await getOrCreateOpenFee(tx, studentId, month, year);
     }
 
     let charge = null;
+    const monthlyFeeNum = Number(routeStudent.monthly_fee);
+    const perTripAmount = Number((Math.round((monthlyFeeNum / 40) * 100) / 100).toFixed(2));
 
-    // If the fee is PAID, it is locked: add or remove no charges
-    if (fee.status !== 'PAID') {
-      const monthlyFeeNum = Number(routeStudent.monthly_fee);
-      const perTripAmount = Number((Math.round((monthlyFeeNum / 40) * 100) / 100).toFixed(2));
+    if (status === 'DROPPED') {
+      // Becoming DROPPED adds one DROP charge (only if this pickup has none yet)
+      const existingDropCharge = await tx.tripCharge.findUnique({
+        where: { pickup_id_kind: { pickup_id: pickup.id, kind: 'DROP' } }
+      });
 
-      if (status === 'DROPPED') {
-        // Becoming DROPPED adds one DROP charge
-        const existingDropCharge = await tx.tripCharge.findUnique({
-          where: {
-            pickup_id_kind: {
-              pickup_id: pickup.id,
-              kind: 'DROP'
-            }
-          }
+      if (!existingDropCharge) {
+        // Use the open fee. If the last one was PAID, a new cycle starts from Rs. 0 here.
+        fee = await getOrCreateOpenFee(tx, studentId, month, year);
+
+        // The 40-trip limit applies to the whole month, across all cycles
+        const monthChargesCount = await tx.tripCharge.count({
+          where: { fee: { student_id: studentId, month, year } }
         });
 
-        if (!existingDropCharge) {
-          const currentChargesCount = await tx.tripCharge.count({
-            where: { fee_id: fee.id }
+        if (monthChargesCount < 40) {
+          await tx.tripCharge.create({
+            data: {
+              pickup_id: pickup.id,
+              fee_id: fee.id,
+              kind: 'DROP',
+              amount: perTripAmount
+            }
           });
-
-          if (currentChargesCount < 40) {
-            await tx.tripCharge.create({
-              data: {
-                pickup_id: pickup.id,
-                fee_id: fee.id,
-                kind: 'DROP',
-                amount: perTripAmount
-              }
-            });
-            charge = { kind: 'DROP', amount: perTripAmount };
-          }
+          charge = { kind: 'DROP', amount: perTripAmount };
         }
 
         fee = await syncFee(tx, fee.id, routeStudent.monthly_fee);
-      } else if (previousStatus === 'DROPPED') {
-        // DROPPED -> PICKED_UP, PENDING or ABSENT deletes the row's charge and resyncs the fee
-        await tx.tripCharge.deleteMany({
-          where: { pickup_id: pickup.id }
-        });
-        fee = await syncFee(tx, fee.id, routeStudent.monthly_fee);
       }
-      // Note: PICKED_UP -> anything never touches charges (it has none).
+    } else if (previousStatus === 'DROPPED') {
+      // DROPPED -> PICKED_UP / PENDING / ABSENT removes the charge, unless its fee is already PAID
+      const dropCharge = await tx.tripCharge.findUnique({
+        where: { pickup_id_kind: { pickup_id: pickup.id, kind: 'DROP' } },
+        include: { fee: { select: { id: true, status: true } } }
+      });
+
+      if (dropCharge && dropCharge.fee.status !== 'PAID') {
+        await tx.tripCharge.delete({ where: { id: dropCharge.id } });
+        fee = await syncFee(tx, dropCharge.fee.id, routeStudent.monthly_fee);
+      }
     }
+    // Note: PICKED_UP -> anything never touches charges (it has none).
 
     // 7. Notification for parent when status actually changed to PICKED_UP, DROPPED, or ABSENT
     const now = new Date();
@@ -290,4 +326,4 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
   });
 }
 
-module.exports = { applyPickupStatus, syncFee };
+module.exports = { applyPickupStatus, syncFee, getOrCreateOpenFee };

@@ -4,7 +4,8 @@ const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { generateToken } = require('../utils/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
-const { slToday } = require('../utils/slDate');
+const { slToday, slMonthYear } = require('../utils/slDate');
+const { getOrCreateOpenFee } = require('../utils/pickupEngine');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -133,7 +134,7 @@ router.get('/fees', async (req, res) => {
     include: {
       student: { select: { name: true, student_code: true } }
     },
-    orderBy: { due_date: 'desc' }
+    orderBy: [{ due_date: 'desc' }, { cycle: 'desc' }]
   });
 
   const distinctStudentIds = [...new Set(fees.map(f => f.student_id))];
@@ -254,6 +255,12 @@ router.patch('/fees/:feeId/pay', async (req, res) => {
           body: `${parentName} paid ${fee.month}/${fee.year} fee for ${fee.student.name}.`
         }
       });
+    }
+
+    // Paid in the middle of the current month: start a fresh Rs. 0 cycle
+    const sl = slMonthYear();
+    if (fee.month === sl.month && fee.year === sl.year) {
+      await getOrCreateOpenFee(tx, fee.student_id, fee.month, fee.year);
     }
 
     return updatedFee;

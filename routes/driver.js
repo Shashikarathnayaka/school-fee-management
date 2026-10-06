@@ -4,7 +4,7 @@ const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
 const { slToday, slDateString, slMonthYear } = require('../utils/slDate');
-const { applyPickupStatus } = require('../utils/pickupEngine');
+const { applyPickupStatus, getOrCreateOpenFee } = require('../utils/pickupEngine');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -695,9 +695,10 @@ router.get('/students/:studentId/fees', async (req, res) => {
       year: true,
       status: true,
       paid_date: true,
-      trips_count: true
+      trips_count: true,
+      cycle: true
     },
-    orderBy: { due_date: 'desc' }
+    orderBy: [{ due_date: 'desc' }, { cycle: 'desc' }]
   });
 
   const per_trip_amount = assignment && assignment.monthly_fee
@@ -782,6 +783,12 @@ router.patch('/students/:studentId/fees/:feeId/pay', async (req, res) => {
         body
       }
     });
+
+    // Paid in the middle of the current month: start a fresh Rs. 0 cycle
+    const sl = slMonthYear();
+    if (fee.month === sl.month && fee.year === sl.year) {
+      await getOrCreateOpenFee(tx, fee.student_id, fee.month, fee.year);
+    }
 
     return updatedFee;
   });
