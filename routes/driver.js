@@ -3,8 +3,8 @@ const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
-const { slToday, slDateString, slMonthYear } = require('../utils/slDate');
-const { applyPickupStatus, getOrCreateOpenFee } = require('../utils/pickupEngine');
+const { slToday, slDateString, slMonthYear, currentPeriod, activeDirection, isRouteLiveNow } = require('../utils/slDate');
+const { applyPickupStatus, getOrCreateOpenFee, ensureTwinRoutes, twinWhere } = require('../utils/pickupEngine');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -35,6 +35,13 @@ router.post('/routes', async (req, res) => {
 router.get('/routes/today', async (req, res) => {
   const today = slToday();
 
+  // Ensure every live route has an opposite-direction twin (best-effort, never fails the request)
+  try {
+    await ensureTwinRoutes(req.user.id);
+  } catch (err) {
+    console.error('[ensureTwinRoutes] failed for driver', req.user.id, err);
+  }
+
   const routes = await prisma.route.findMany({
     where: {
       driver_id: req.user.id,
@@ -57,7 +64,8 @@ router.get('/routes/today', async (req, res) => {
     pickups = await prisma.pickupStatus.findMany({
       where: {
         route_id: { in: routeIds },
-        date: today
+        date: today,
+        period: currentPeriod()
       }
     });
   }
@@ -85,6 +93,7 @@ router.get('/routes/today', async (req, res) => {
 
     return {
       ...route,
+      is_active_now: isRouteLiveNow(route.direction),
       students: formattedStudents
     };
   });
@@ -96,7 +105,11 @@ router.get('/routes/today', async (req, res) => {
     return 0;
   });
 
-  res.json({ routes: formattedRoutes });
+  res.json({
+    routes: formattedRoutes,
+    period: currentPeriod(),
+    active_direction: activeDirection()
+  });
 });
 
 // PATCH /driver/status - toggle on-duty/off-duty
@@ -232,24 +245,17 @@ router.post('/routes/:routeId/students', async (req, res) => {
     });
   }
 
-  // 2. If student already has an active route of the SAME direction (any driver) -> 409 CONFLICT
-  const sameDirectionActiveRoute = await prisma.routeStudent.findFirst({
+  // 2. One route covers both trips, so a student can be on only one active route
+  const alreadyOnActiveRoute = await prisma.routeStudent.findFirst({
     where: {
       student_id: student.id,
-      route: {
-        direction: route.direction,
-        status: { notIn: ['COMPLETED', 'ARCHIVED'] }
-      }
+      route: { status: { notIn: ['COMPLETED', 'ARCHIVED'] } }
     }
   });
 
-  if (sameDirectionActiveRoute) {
-    const dirLabel = route.direction === 'HOME_TO_SCHOOL' ? 'Home to School' : 'School to Home';
+  if (alreadyOnActiveRoute) {
     return res.status(409).json({
-      error: {
-        message: `Student is already assigned to an active ${dirLabel} route`,
-        code: 'CONFLICT'
-      }
+      error: { message: 'Student is already assigned to an active route', code: 'CONFLICT' }
     });
   }
 
@@ -312,6 +318,7 @@ router.post('/routes/:routeId/students', async (req, res) => {
   });
 
   await ensureMonthlyFees({ studentIds: [student.id] });
+  await ensureTwinRoutes(req.user.id);
 
   res.status(201).json({ routeStudent });
 });
@@ -333,6 +340,11 @@ router.delete('/routes/:routeId/students/:studentId', async (req, res) => {
   if (deleted.count === 0) {
     return res.status(404).json({ error: { message: 'Student not found in route', code: 'NOT_FOUND' } });
   }
+
+  // Also remove the student from the twin route (if any)
+  await prisma.routeStudent.deleteMany({
+    where: { student_id: studentId, route: twinWhere(req.user.id, route) }
+  });
 
   res.json({ success: true });
 });
@@ -403,6 +415,14 @@ router.patch('/routes/:routeId', async (req, res) => {
     }
   }
 
+  // If the name is changing, rename the twin route first
+  if (data.name && data.name !== route.name) {
+    await prisma.route.updateMany({
+      where: twinWhere(req.user.id, route),
+      data: { name: data.name }
+    });
+  }
+
   const updated = await prisma.route.update({
     where: { id: routeId },
     data
@@ -440,6 +460,12 @@ router.delete('/routes/:routeId', async (req, res) => {
     where: { id: routeId }
   });
 
+  // Archive the twin so ensureTwinRoutes does not recreate it
+  await prisma.route.updateMany({
+    where: twinWhere(req.user.id, route),
+    data: { status: 'ARCHIVED' }
+  });
+
   res.json({ success: true });
 });
 
@@ -457,6 +483,12 @@ router.patch('/routes/:routeId/archive', async (req, res) => {
 
   const updated = await prisma.route.update({
     where: { id: routeId },
+    data: { status: 'ARCHIVED' }
+  });
+
+  // Archive the twin so ensureTwinRoutes does not recreate it
+  await prisma.route.updateMany({
+    where: twinWhere(req.user.id, route),
     data: { status: 'ARCHIVED' }
   });
 
@@ -557,6 +589,7 @@ router.get('/history', async (req, res) => {
         status: true,
         pickup_method: true,
         updated_at: true,
+        period: true,
         student: {
           select: {
             id: true,
@@ -581,7 +614,12 @@ router.get('/history', async (req, res) => {
     prisma.pickupStatus.count({ where }),
   ]);
 
-  res.json({ history, pagination: { page, limit, total } });
+  const historyWithDirection = history.map(h => ({
+    ...h,
+    direction: h.period === 'EVENING' ? 'SCHOOL_TO_HOME' : 'HOME_TO_SCHOOL'
+  }));
+
+  res.json({ history: historyWithDirection, pagination: { page, limit, total } });
 });
 
 // GET /driver/notifications

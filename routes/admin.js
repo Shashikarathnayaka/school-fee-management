@@ -108,7 +108,8 @@ router.patch('/pickups/:id/mark', async (req, res) => {
     routeId: existing.route_id,
     status,
     actorUserId: req.user.id,
-    method: 'MANUAL'
+    method: 'MANUAL',
+    enforcePeriod: false
   });
 
   res.json({ pickup });
@@ -173,7 +174,8 @@ router.post('/pickups/ticket', async (req, res) => {
       routeId: route_id,
       status: 'PICKED_UP',
       actorUserId: req.user.id,
-      method: 'TICKET'
+      method: 'TICKET',
+      enforcePeriod: false
     });
 
     return res.json({ pickup });
@@ -185,7 +187,8 @@ router.post('/pickups/ticket', async (req, res) => {
     routeId: route_id,
     status: 'PICKED_UP',
     actorUserId: req.user.id,
-    method: 'TICKET'
+    method: 'TICKET',
+    enforcePeriod: false
   });
 
   res.status(201).json({ pickup });

@@ -28,6 +28,40 @@ function slMonthYear(d = new Date()) {
   return { month, year };
 }
 
+function slPeriod(d = new Date()) {
+  const date = d instanceof Date ? d : new Date(d);
+  const hour = parseInt(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Colombo',
+    hour: 'numeric',
+    hourCycle: 'h23'
+  }).format(date), 10);
+  return hour < 12 ? 'MORNING' : 'EVENING';
+}
+
+// Returns the Asia/Colombo hour 0-23 using formatToParts
+function slHour(d = new Date()) {
+  const date = d instanceof Date ? d : new Date(d);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Colombo',
+    hour: 'numeric',
+    hourCycle: 'h23'
+  }).formatToParts(date);
+  return parseInt(parts.find(p => p.type === 'hour').value, 10);
+}
+
+// Single implementation; slPeriod is the Request-1 alias
+const currentPeriod = slPeriod;
+
+// 'HOME_TO_SCHOOL' during MORNING, 'SCHOOL_TO_HOME' during EVENING
+function activeDirection(d = new Date()) {
+  return currentPeriod(d) === 'MORNING' ? 'HOME_TO_SCHOOL' : 'SCHOOL_TO_HOME';
+}
+
+// True when the given route direction matches the current active period
+function isRouteLiveNow(direction, d = new Date()) {
+  return direction === activeDirection(d);
+}
+
 function formatSLTime(d = new Date()) {
   const date = d instanceof Date ? d : new Date(d);
   return new Intl.DateTimeFormat('en-US', {
@@ -42,5 +76,10 @@ module.exports = {
   slDateString,
   slToday,
   slMonthYear,
+  slPeriod,
+  slHour,
+  currentPeriod,
+  activeDirection,
+  isRouteLiveNow,
   formatSLTime
 };

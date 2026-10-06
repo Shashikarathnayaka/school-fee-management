@@ -120,9 +120,10 @@ model PickupStatus {
   pickup_method PickupMethod?
   marked_by     String?
   updated_at    DateTime      @updatedAt
+  period        String        @default("MORNING")
   charges       TripCharge[]
 
-  @@unique([route_id, student_id, date])
+  @@unique([route_id, student_id, date, period])
   @@map("pickup_status")
 }
 

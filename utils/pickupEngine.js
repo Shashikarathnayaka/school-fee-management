@@ -1,8 +1,15 @@
 const { PrismaClient, Prisma } = require('@prisma/client');
-const { slToday, slMonthYear, formatSLTime } = require('./slDate');
+const { slToday, slMonthYear, isRouteLiveNow, formatSLTime } = require('./slDate');
 const { HttpError } = require('./httpError');
 
 const prisma = new PrismaClient();
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const OPPOSITE = {
+  HOME_TO_SCHOOL: 'SCHOOL_TO_HOME',
+  SCHOOL_TO_HOME: 'HOME_TO_SCHOOL'
+};
+const LIVE = { notIn: ['COMPLETED', 'ARCHIVED'] };
 
 /**
  * Resyncs a fee row from its associated trip_charges.
@@ -88,6 +95,107 @@ async function getOrCreateOpenFee(tx, studentId, month, year) {
 }
 
 /**
+ * Returns a Prisma where-clause matching the twin route of the given route.
+ * Use this in route-level queries only (e.g., prisma.route.findFirst/updateMany).
+ *
+ * @param {string} driverId
+ * @param {{ name: string, direction: string }} route
+ * @returns {Object}
+ */
+function twinWhere(driverId, route) {
+  return {
+    driver_id: driverId,
+    name: route.name,
+    direction: OPPOSITE[route.direction],
+    status: LIVE
+  };
+}
+
+// Per-driver in-memory lock so concurrent requests don't create duplicate twins
+const twinLocks = new Map();
+
+/**
+ * For every live route this driver owns, ensures an opposite-direction twin with
+ * the same name exists and copies any RouteStudent rows the twin is missing.
+ * Skips students who already have a live same-direction route with this driver.
+ * Does NOT copy start_time or end_time.
+ *
+ * @param {string} driverId
+ * @returns {Promise<void>}
+ */
+async function ensureTwinRoutes(driverId) {
+  if (twinLocks.has(driverId)) {
+    return twinLocks.get(driverId);
+  }
+  const promise = syncTwins(driverId).finally(() => twinLocks.delete(driverId));
+  twinLocks.set(driverId, promise);
+  return promise;
+}
+
+async function syncTwins(driverId) {
+  const routes = await prisma.route.findMany({
+    where: { driver_id: driverId, status: LIVE },
+    include: { students: true }
+  });
+
+  for (const route of routes) {
+    // Find or create the twin route (opposite direction, same name)
+    let twin = await prisma.route.findFirst({
+      where: twinWhere(driverId, route),
+      include: { students: true }
+    });
+
+    if (!twin) {
+      twin = await prisma.route.create({
+        data: {
+          driver_id: driverId,
+          name: route.name,
+          direction: OPPOSITE[route.direction],
+          status: route.status
+          // start_time and end_time intentionally omitted (null)
+        },
+        include: { students: true }
+      });
+    }
+
+    // Determine students already in the twin
+    const twinStudentIds = new Set(twin.students.map(rs => rs.student_id));
+
+    // Compute next pickup_order for new rows in the twin
+    let nextOrder = twin.students.length > 0
+      ? Math.max(...twin.students.map(s => s.pickup_order || 0)) + 1
+      : 1;
+
+    for (const rs of route.students) {
+      // Already in twin — skip
+      if (twinStudentIds.has(rs.student_id)) continue;
+
+      // Skip if student already has a live route of the twin direction with THIS driver
+      const alreadyOnTwinDir = await prisma.routeStudent.findFirst({
+        where: {
+          student_id: rs.student_id,
+          route: {
+            driver_id: driverId,
+            direction: OPPOSITE[route.direction],
+            status: LIVE
+          }
+        }
+      });
+      if (alreadyOnTwinDir) continue;
+
+      await prisma.routeStudent.create({
+        data: {
+          route_id: twin.id,
+          student_id: rs.student_id,
+          pickup_order: nextOrder++,
+          monthly_fee: rs.monthly_fee
+        }
+      });
+    }
+  }
+}
+
+/**
  * Applies a pickup status change for a student on a route.
  * Handles validation, pickup record update, fee creation/resync,
  * trip charges (on DROPPED only), and parent notifications within a single transaction.
@@ -98,15 +206,16 @@ async function getOrCreateOpenFee(tx, studentId, month, year) {
  * @param {string} params.status - 'PENDING' | 'PICKED_UP' | 'DROPPED' | 'ABSENT'
  * @param {string} [params.actorUserId]
  * @param {string} [params.method] - 'MANUAL' | 'TICKET'
+ * @param {boolean} [params.enforcePeriod=true] - If true, throws when route is not live now
  * @returns {Promise<{ pickup: Object, fee: Object|null, charge: Object|null }>}
  */
-async function applyPickupStatus({ studentId, routeId, status, actorUserId, method }) {
+async function applyPickupStatus({ studentId, routeId, status, actorUserId, method, enforcePeriod = true }) {
   return await prisma.$transaction(async (tx) => {
     const today = slToday();
     const { month, year } = slMonthYear();
 
-    // 1 & 2. Load student, RouteStudent, route, and existing pickup row in parallel
-    const [student, routeStudent, route, existing, existingFee] = await Promise.all([
+    // ── Step 1: Load route-independent data ──────────────────────────────────
+    const [student, routeStudent, route] = await Promise.all([
       tx.student.findUnique({
         where: { id: studentId },
         select: {
@@ -131,19 +240,6 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
           name: true,
           direction: true
         }
-      }),
-      tx.pickupStatus.findUnique({
-        where: {
-          route_id_student_id_date: {
-            route_id: routeId,
-            student_id: studentId,
-            date: today
-          }
-        }
-      }),
-      tx.fee.findFirst({
-        where: { student_id: studentId, month, year },
-        orderBy: { cycle: 'desc' }
       })
     ]);
 
@@ -154,6 +250,40 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
     if (!routeStudent || !route) {
       throw new HttpError(409, 'Student is not assigned to this route', 'NOT_ON_ROUTE');
     }
+
+    // ── Period guard (admins bypass with enforcePeriod: false) ───────────────
+    if (enforcePeriod && !isRouteLiveNow(route.direction)) {
+      const label = route.direction === 'HOME_TO_SCHOOL'
+        ? 'morning (Home to School)'
+        : 'evening (School to Home)';
+      throw new HttpError(
+        409,
+        `This route is not active right now. Only the ${label} route can be used at this time.`,
+        'WRONG_PERIOD'
+      );
+    }
+
+    // Derive period from route direction so the stored row always matches its route,
+    // regardless of what the clock says (important for admin overrides).
+    const period = route.direction === 'HOME_TO_SCHOOL' ? 'MORNING' : 'EVENING';
+
+    // ── Step 2: Load period-dependent data ───────────────────────────────────
+    const [existing, existingFee] = await Promise.all([
+      tx.pickupStatus.findUnique({
+        where: {
+          route_id_student_id_date_period: {
+            route_id: routeId,
+            student_id: studentId,
+            date: today,
+            period
+          }
+        }
+      }),
+      tx.fee.findFirst({
+        where: { student_id: studentId, month, year },
+        orderBy: { cycle: 'desc' }
+      })
+    ]);
 
     const previousStatus = existing ? existing.status : null;
     const hasStatusChanged = previousStatus !== status;
@@ -188,6 +318,7 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
           route_id: routeId,
           student_id: studentId,
           date: today,
+          period,
           ...pickupData
         },
         include: {
@@ -282,7 +413,8 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
     let notifTitle = null;
     let notifBody = null;
 
-    const isHomeToSchool = route.direction === 'HOME_TO_SCHOOL';
+    // Notifications follow the period: morning = home→school, evening = school→home
+    const isHomeToSchool = period === 'MORNING';
 
     if (status === 'PICKED_UP') {
       notifTitle = 'Child Picked Up';
@@ -326,4 +458,4 @@ async function applyPickupStatus({ studentId, routeId, status, actorUserId, meth
   });
 }
 
-module.exports = { applyPickupStatus, syncFee, getOrCreateOpenFee };
+module.exports = { applyPickupStatus, syncFee, getOrCreateOpenFee, ensureTwinRoutes, twinWhere };
