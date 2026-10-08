@@ -141,13 +141,22 @@ Authorization: Bearer {{parentToken}}
 GET {{baseUrl}}/driver/profile
 Authorization: Bearer {{driverToken}}
 
-### Toggle Duty Status
+### Toggle Duty Status (On Duty)
 PATCH {{baseUrl}}/driver/status
 Content-Type: application/json
 Authorization: Bearer {{driverToken}}
 
 {
   "is_on_duty": true
+}
+
+### Toggle Duty Status (Off Duty - sets active routes back to SCHEDULED)
+PATCH {{baseUrl}}/driver/status
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "is_on_duty": false
 }
 
 ### Create Morning Route (HOME_TO_SCHOOL)
@@ -220,6 +229,10 @@ Authorization: Bearer {{driverToken}}
 
 ### Delete Route (only if no pickup history)
 DELETE {{baseUrl}}/driver/routes/{{eveningRouteId}}
+Authorization: Bearer {{driverToken}}
+
+### Start Route (notifies parents)
+POST {{baseUrl}}/driver/routes/{{morningRouteId}}/start
 Authorization: Bearer {{driverToken}}
 
 ### Get Today's Routes

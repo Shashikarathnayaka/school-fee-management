@@ -260,6 +260,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/status`
+- **Description**: Toggles the driver's on-duty/off-duty status. When going off-duty (`is_on_duty: false`), this driver's `ACTIVE` routes are automatically set back to `SCHEDULED` and all today's `PENDING` pickups are marked as `ABSENT`.
 - **Body**:
 
   ```json
@@ -410,7 +411,41 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - Blocked with `409 Conflict` (`code: "ROUTE_HAS_HISTORY"`, `"Route has pickup history. Archive it instead."`) if the route has any pickup history records.
 - **Success Response (200 OK)**: Returns `{ success: true }`.
 
-#### 11. Update Pickup Status
+#### 11. Start Route
+
+- **Method**: `POST`
+- **Endpoint**: `/driver/routes/:routeId/start`
+- **Parameters**: `:routeId` (Path) - The UUID of the route.
+- **Description**: Starts a route and sends notifications to parents of assigned students.
+  - Driver must be on duty (`drivers.is_on_duty = true`). Returns `409 Conflict` (`code: "NOT_ON_DUTY"`) if off-duty.
+  - Route must belong to the driver and cannot be in `ARCHIVED` or `COMPLETED` status. Returns `404 Not Found` (`code: "NOT_FOUND"`) or `409 Conflict` (`code: "INVALID_STATE"`).
+  - Executed inside a single transaction:
+    - Sets this driver's other `ACTIVE` routes back to `SCHEDULED`.
+    - Updates this route's status to `ACTIVE`.
+    - Loads all students assigned to the route and groups them by `parent_id` (parents with multiple children receive one combined notification).
+    - Sends a `"Driver on the way"` notification to each parent:
+      `"{names}'s van ({van_number}) has started the {Morning|Evening} {pickup|drop-off} route '{route.name}' at {time} and is on the way."`
+      (pickup for `HOME_TO_SCHOOL`, drop-off for `SCHOOL_TO_HOME`).
+    - Idempotent: Skips a parent if the same `"Driver on the way"` notification for this route was already sent today (Asia/Colombo).
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "route": {
+      "id": "c1f7b845-82f2-47f4-aa91-9ca04e5030c8",
+      "name": "Morning Pickup",
+      "direction": "HOME_TO_SCHOOL",
+      "status": "ACTIVE"
+    },
+    "notified": 2,
+    "skipped": 0
+  }
+  ```
+- **Error Responses**:
+  - `404 Not Found` (`code: "NOT_FOUND"`): Route not found.
+  - `409 Conflict` (`code: "INVALID_STATE"`): Route is archived or completed.
+  - `409 Conflict` (`code: "NOT_ON_DUTY"`): Driver is not currently on duty.
+
+#### 12. Update Pickup Status
 
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/pickup/:studentId`
@@ -453,7 +488,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   }
   ```
 
-#### 12. Remove Student from Route
+#### 13. Remove Student from Route
 
 - **Method**: `DELETE`
 - **Endpoint**: `/driver/routes/:routeId/students/:studentId`
@@ -461,18 +496,18 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - `:routeId` (Path) - The UUID of the route.
   - `:studentId` (Path) - The UUID of the student.
 
-#### 13. Get Driver Notifications
+#### 14. Get Driver Notifications
 
 - **Method**: `GET`
 - **Endpoint**: `/driver/notifications`
 
-#### 14. Read Driver Notification
+#### 15. Read Driver Notification
 
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/notifications/:id/read`
 - **Parameters**: `:id` (Path) - The UUID of the notification.
 
-#### 15. Get Pickup History
+#### 16. Get Pickup History
 
 - **Method**: `GET`
 - **Endpoint**: `/driver/history?date=YYYY-MM-DD&route_id=&page=&limit=`
@@ -514,7 +549,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   }
   ```
 
-#### 16. Get Student Fee Payment Status
+#### 17. Get Student Fee Payment Status
 
 - **Method**: `GET`
 - **Endpoint**: `/driver/students/:studentId/fees`
@@ -547,7 +582,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   }
   ```
 
-#### 17. Pay Student Fee (Collect Payment)
+#### 18. Pay Student Fee (Collect Payment)
 
 - **Method**: `PATCH`
 - **Endpoint**: `/driver/students/:studentId/fees/:feeId/pay`
@@ -561,7 +596,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - `409 Conflict`: If the fee is already paid.
 - **Success Response (200 OK)**: Returns the updated fee marked as `PAID`.
 
-#### 18. Remind Parents of Due Transport Fees
+#### 19. Remind Parents of Due Transport Fees
 
 - **Method**: `POST`
 - **Endpoint**: `/driver/fees/remind`

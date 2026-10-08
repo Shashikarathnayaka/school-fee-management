@@ -307,6 +307,26 @@ paths:
         '200':
           description: Success
 
+  /driver/status:
+    patch:
+      summary: Toggle Driver Duty Status
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_on_duty]
+              properties:
+                is_on_duty:
+                  type: boolean
+      responses:
+        '200':
+          description: Success
+
   /driver/routes:
     post:
       summary: Create Route
@@ -340,6 +360,37 @@ paths:
       responses:
         '200':
           description: Success
+
+  /driver/routes/{routeId}/start:
+    post:
+      summary: Start Route and Notify Parents
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route:
+                    type: object
+                  notified:
+                    type: integer
+                  skipped:
+                    type: integer
+        '404':
+          description: Route not found
+        '409':
+          description: Driver not on duty or Route in invalid state
 
   /driver/routes/{routeId}/students:
     post:

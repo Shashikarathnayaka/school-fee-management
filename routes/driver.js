@@ -3,7 +3,7 @@ const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
-const { slToday, slDateString, slMonthYear, currentPeriod, activeDirection, isRouteLiveNow } = require('../utils/slDate');
+const { slToday, slDateString, slMonthYear, currentPeriod, activeDirection, isRouteLiveNow, formatSLTime } = require('../utils/slDate');
 const { applyPickupStatus, getOrCreateOpenFee, ensureTwinRoutes, twinWhere } = require('../utils/pickupEngine');
 
 const router = express.Router();
@@ -127,8 +127,16 @@ router.patch('/status', async (req, res) => {
       data: { is_on_duty }
     });
 
-    // Auto-absent cascade: when going off-duty, mark all today's PENDING pickups as ABSENT
+    // When going off-duty: set ACTIVE routes back to SCHEDULED and cascade today's PENDING pickups to ABSENT
     if (current.is_on_duty === true && is_on_duty === false) {
+      await tx.route.updateMany({
+        where: {
+          driver_id: req.user.id,
+          status: 'ACTIVE'
+        },
+        data: { status: 'SCHEDULED' }
+      });
+
       const today = slToday();
       const routes = await tx.route.findMany({
         where: {
@@ -520,6 +528,141 @@ router.patch('/pickup/:studentId', async (req, res) => {
   });
 
   res.json({ pickup, fee, charge });
+});
+
+// POST /driver/routes/:routeId/start - start route and notify parents
+router.post('/routes/:routeId/start', async (req, res) => {
+  const { routeId } = req.params;
+
+  const route = await prisma.route.findFirst({
+    where: { id: routeId, driver_id: req.user.id }
+  });
+
+  if (!route) {
+    return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
+  }
+
+  if (route.status === 'ARCHIVED' || route.status === 'COMPLETED') {
+    return res.status(409).json({
+      error: {
+        message: `Cannot start a route that is ${route.status.toLowerCase()}`,
+        code: 'INVALID_STATE'
+      }
+    });
+  }
+
+  const driver = await prisma.driver.findUnique({
+    where: { user_id: req.user.id }
+  });
+
+  if (!driver || !driver.is_on_duty) {
+    return res.status(409).json({
+      error: {
+        message: 'Driver must be on duty to start a route',
+        code: 'NOT_ON_DUTY'
+      }
+    });
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    // a. Set driver's other ACTIVE routes back to SCHEDULED
+    await tx.route.updateMany({
+      where: {
+        driver_id: req.user.id,
+        id: { not: routeId },
+        status: 'ACTIVE'
+      },
+      data: { status: 'SCHEDULED' }
+    });
+
+    // b. Set this route status = ACTIVE
+    const updatedRoute = await tx.route.update({
+      where: { id: routeId },
+      data: { status: 'ACTIVE' }
+    });
+
+    // c. Load RouteStudent for the route with student (id, name, parent_id)
+    const routeStudents = await tx.routeStudent.findMany({
+      where: { route_id: routeId },
+      include: {
+        student: {
+          select: {
+            id: true,
+            name: true,
+            parent_id: true
+          }
+        }
+      },
+      orderBy: { pickup_order: 'asc' }
+    });
+
+    // d. Group by parent_id (one parent with several kids gets ONE notification listing the names)
+    const parentStudentsMap = new Map();
+    for (const rs of routeStudents) {
+      if (rs.student && rs.student.parent_id) {
+        const parentId = rs.student.parent_id;
+        if (!parentStudentsMap.has(parentId)) {
+          parentStudentsMap.set(parentId, []);
+        }
+        parentStudentsMap.get(parentId).push(rs.student);
+      }
+    }
+
+    // e. Create Notification rows / f. Idempotent
+    const todaySLStr = slDateString();
+    const slStartOfDay = new Date(`${todaySLStr}T00:00:00+05:30`);
+    const isHomeToSchool = route.direction === 'HOME_TO_SCHOOL';
+    const periodLabel = isHomeToSchool ? 'Morning' : 'Evening';
+    const actionLabel = isHomeToSchool ? 'pickup' : 'drop-off';
+    const timeFormatted = formatSLTime();
+    const title = 'Driver on the way';
+
+    let notified = 0;
+    let skipped = 0;
+
+    for (const [parentId, students] of parentStudentsMap.entries()) {
+      const existingNotifs = await tx.notification.findMany({
+        where: {
+          user_id: parentId,
+          title,
+          created_at: { gte: slStartOfDay }
+        }
+      });
+
+      const alreadyNotified = existingNotifs.some(n =>
+        n.body.includes(route.name) &&
+        n.body.includes(actionLabel)
+      );
+
+      if (alreadyNotified) {
+        skipped++;
+      } else {
+        const names = students.map(s => s.name);
+        const namesStr = names.length > 1
+          ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
+          : names[0];
+
+        const body = `${namesStr}'s van (${driver.van_number}) has started the ${periodLabel} ${actionLabel} route '${route.name}' at ${timeFormatted} and is on the way.`;
+
+        await tx.notification.create({
+          data: {
+            user_id: parentId,
+            title,
+            body
+          }
+        });
+        notified++;
+      }
+    }
+
+    return {
+      route: updatedRoute,
+      notified,
+      skipped
+    };
+  });
+
+  res.json(result);
 });
 
 // PATCH /driver/routes/:routeId/complete - mark route as completed, cascade PENDING→ABSENT
