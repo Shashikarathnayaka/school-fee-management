@@ -293,6 +293,29 @@ router.patch('/notifications/:id/read', async (req, res) => {
   res.json({ success: true });
 });
 
+// DELETE /parent/notifications/:id
+router.delete('/notifications/:id', async (req, res) => {
+  const { id } = req.params;
+  const result = await prisma.notification.deleteMany({
+    where: { id, user_id: req.user.id }
+  });
+
+  if (result.count === 0) {
+    return res.status(404).json({ error: { message: 'Notification not found', code: 'NOT_FOUND' } });
+  }
+
+  res.json({ success: true });
+});
+
+// DELETE /parent/notifications  (clear all)
+router.delete('/notifications', async (req, res) => {
+  const result = await prisma.notification.deleteMany({
+    where: { user_id: req.user.id }
+  });
+
+  res.json({ success: true, deleted: result.count });
+});
+
 // GET /parent/profile
 router.get('/profile', async (req, res) => {
   const user = await prisma.user.findUnique({

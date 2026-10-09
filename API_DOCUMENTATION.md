@@ -229,6 +229,22 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Endpoint**: `/parent/notifications/:id/read`
 - **Parameters**: `:id` (Path) - The UUID of the notification.
 
+#### 11. Delete a Notification
+
+- **Method**: `DELETE`
+- **Endpoint**: `/parent/notifications/:id`
+- **Parameters**: `:id` (Path) - The UUID of the notification.
+- **Description**: Permanently deletes a single notification belonging to the authenticated parent.
+- **Success Response (200 OK)**: `{ "success": true }`
+- **Error Response (404 Not Found)**: If the notification does not exist or belongs to another user (`code: "NOT_FOUND"`).
+
+#### 12. Clear All Notifications
+
+- **Method**: `DELETE`
+- **Endpoint**: `/parent/notifications`
+- **Description**: Permanently deletes **all** notifications belonging to the authenticated parent.
+- **Success Response (200 OK)**: `{ "success": true, "deleted": <count> }`
+
 ---
 
 ### C. Driver APIs
@@ -507,7 +523,23 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Endpoint**: `/driver/notifications/:id/read`
 - **Parameters**: `:id` (Path) - The UUID of the notification.
 
-#### 16. Get Pickup History
+#### 16. Delete a Driver Notification
+
+- **Method**: `DELETE`
+- **Endpoint**: `/driver/notifications/:id`
+- **Parameters**: `:id` (Path) - The UUID of the notification.
+- **Description**: Permanently deletes a single notification belonging to the authenticated driver.
+- **Success Response (200 OK)**: `{ "success": true }`
+- **Error Response (404 Not Found)**: If the notification does not exist or belongs to another user (`code: "NOT_FOUND"`).
+
+#### 17. Clear All Driver Notifications
+
+- **Method**: `DELETE`
+- **Endpoint**: `/driver/notifications`
+- **Description**: Permanently deletes **all** notifications belonging to the authenticated driver.
+- **Success Response (200 OK)**: `{ "success": true, "deleted": <count> }`
+
+#### 18. Get Pickup History
 
 - **Method**: `GET`
 - **Endpoint**: `/driver/history?date=YYYY-MM-DD&route_id=&page=&limit=`

@@ -132,6 +132,14 @@ Authorization: Bearer {{parentToken}}
 PATCH {{baseUrl}}/parent/notifications/{{notificationId}}/read
 Authorization: Bearer {{parentToken}}
 
+### Delete a Parent Notification
+DELETE {{baseUrl}}/parent/notifications/{{notificationId}}
+Authorization: Bearer {{parentToken}}
+
+### Clear All Parent Notifications
+DELETE {{baseUrl}}/parent/notifications
+Authorization: Bearer {{parentToken}}
+
 
 # ==========================================
 # DRIVER ENDPOINTS
@@ -292,6 +300,14 @@ Authorization: Bearer {{driverToken}}
 
 ### Mark Driver Notification as Read
 PATCH {{baseUrl}}/driver/notifications/{{notificationId}}/read
+Authorization: Bearer {{driverToken}}
+
+### Delete a Driver Notification
+DELETE {{baseUrl}}/driver/notifications/{{notificationId}}
+Authorization: Bearer {{driverToken}}
+
+### Clear All Driver Notifications
+DELETE {{baseUrl}}/driver/notifications
 Authorization: Bearer {{driverToken}}
 
 # ==========================================
