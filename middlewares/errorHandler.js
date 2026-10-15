@@ -6,7 +6,7 @@ const errorHandler = (err, req, res, next) => {
       error: {
         message: 'Validation Error',
         code: 'VALIDATION_ERROR',
-        details: err.errors
+        details: err.errors || err.issues || []
       }
     });
   }

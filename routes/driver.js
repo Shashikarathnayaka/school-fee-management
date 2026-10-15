@@ -86,6 +86,7 @@ router.get('/routes/today', async (req, res) => {
         per_trip_amount: perTrip,
         student: {
           ...rs.student,
+          monthly_fee: mFee,
           pickup_status: pickupRow ? [pickupRow] : []
         }
       };
@@ -335,26 +336,208 @@ router.post('/routes/:routeId/students', async (req, res) => {
 router.delete('/routes/:routeId/students/:studentId', async (req, res) => {
   const { routeId, studentId } = req.params;
 
-  // Verify driver owns route
-  const route = await prisma.route.findFirst({ where: { id: routeId, driver_id: req.user.id } });
+  // Verify route exists and belongs to driver
+  const route = await prisma.route.findUnique({ where: { id: routeId } });
   if (!route) {
     return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
   }
+  if (route.driver_id !== req.user.id) {
+    return res.status(403).json({ error: { message: 'Forbidden: Route does not belong to driver', code: 'FORBIDDEN' } });
+  }
 
-  const deleted = await prisma.routeStudent.deleteMany({
+  const routeStudent = await prisma.routeStudent.findFirst({
     where: { route_id: routeId, student_id: studentId }
   });
-
-  if (deleted.count === 0) {
-    return res.status(404).json({ error: { message: 'Student not found in route', code: 'NOT_FOUND' } });
+  if (!routeStudent) {
+    return res.status(404).json({ error: { message: 'Student not found on this route', code: 'NOT_FOUND' } });
   }
+
+  // Check if student has unpaid fees
+  const unpaidFee = await prisma.fee.findFirst({
+    where: {
+      student_id: studentId,
+      status: 'DUE',
+      amount: { gt: 0 }
+    }
+  });
+
+  // Remove student from route (unassign only - preserves Student, fees, pickups, etc.)
+  await prisma.routeStudent.deleteMany({
+    where: { route_id: routeId, student_id: studentId }
+  });
 
   // Also remove the student from the twin route (if any)
   await prisma.routeStudent.deleteMany({
     where: { student_id: studentId, route: twinWhere(req.user.id, route) }
   });
 
-  res.json({ success: true });
+  const response = { success: true };
+  if (unpaidFee) {
+    response.warning = 'Student has unpaid fees';
+  }
+
+  res.json(response);
+});
+
+// PATCH /driver/routes/:routeId/students/:studentId
+const updateRouteStudentSchema = z.object({
+  monthly_fee: z.number().positive().optional(),
+  pickup_location: z.string().trim().max(255).optional(),
+  new_route_id: z.string().min(1).optional()
+}).refine(data => data.monthly_fee !== undefined || data.pickup_location !== undefined || data.new_route_id !== undefined, {
+  message: 'At least one field (monthly_fee, pickup_location, new_route_id) is required'
+});
+
+router.patch('/routes/:routeId/students/:studentId', async (req, res) => {
+  const { routeId, studentId } = req.params;
+  const { monthly_fee, pickup_location, new_route_id } = updateRouteStudentSchema.parse(req.body);
+
+  // 1. Verify route exists and driver owns it
+  const route = await prisma.route.findUnique({
+    where: { id: routeId }
+  });
+  if (!route) {
+    return res.status(404).json({ error: { message: 'Route not found', code: 'NOT_FOUND' } });
+  }
+  if (route.driver_id !== req.user.id) {
+    return res.status(403).json({ error: { message: 'Forbidden: Route does not belong to driver', code: 'FORBIDDEN' } });
+  }
+
+  // 2. Verify student is assigned to this route
+  const routeStudent = await prisma.routeStudent.findFirst({
+    where: { route_id: routeId, student_id: studentId }
+  });
+  if (!routeStudent) {
+    return res.status(404).json({ error: { message: 'Student not found on this route', code: 'NOT_FOUND' } });
+  }
+
+  // 3. If new_route_id is provided, validate it
+  let newRoute = null;
+  if (new_route_id) {
+    newRoute = await prisma.route.findUnique({
+      where: { id: new_route_id }
+    });
+    if (!newRoute) {
+      return res.status(404).json({ error: { message: 'New route not found', code: 'NOT_FOUND' } });
+    }
+    if (newRoute.driver_id !== req.user.id) {
+      return res.status(403).json({ error: { message: 'Forbidden: New route does not belong to driver', code: 'FORBIDDEN' } });
+    }
+    if (newRoute.status === 'COMPLETED' || newRoute.status === 'ARCHIVED') {
+      return res.status(400).json({ error: { message: 'New route cannot be completed or archived', code: 'VALIDATION_ERROR' } });
+    }
+
+    if (new_route_id !== routeId) {
+      const alreadyOnNewRoute = await prisma.routeStudent.findFirst({
+        where: { route_id: new_route_id, student_id: studentId }
+      });
+      if (alreadyOnNewRoute) {
+        return res.status(409).json({ error: { message: 'Student is already assigned to this route', code: 'CONFLICT' } });
+      }
+
+      const existingInDirection = await prisma.routeStudent.findFirst({
+        where: {
+          student_id: studentId,
+          route_id: { notIn: [routeId, new_route_id] },
+          route: {
+            driver_id: req.user.id,
+            direction: newRoute.direction,
+            status: { notIn: ['COMPLETED', 'ARCHIVED'] }
+          }
+        }
+      });
+      if (existingInDirection) {
+        const dirLabel = newRoute.direction === 'HOME_TO_SCHOOL' ? 'Home to School' : 'School to Home';
+        return res.status(409).json({
+          error: {
+            message: `Student is already assigned to an active ${dirLabel} route`,
+            code: 'CONFLICT'
+          }
+        });
+      }
+    }
+  }
+
+  // 4. Update inside transaction (preserves Student record, never modifies PAID fees)
+  const result = await prisma.$transaction(async (tx) => {
+    if (pickup_location !== undefined) {
+      await tx.student.update({
+        where: { id: studentId },
+        data: { pickup_location }
+      });
+    }
+
+    let targetRouteId = routeId;
+    let targetRoute = route;
+
+    if (new_route_id && new_route_id !== routeId) {
+      targetRouteId = new_route_id;
+      targetRoute = newRoute;
+
+      const lastStudent = await tx.routeStudent.findFirst({
+        where: { route_id: new_route_id },
+        orderBy: { pickup_order: 'desc' }
+      });
+      const nextOrder = lastStudent ? (lastStudent.pickup_order || 0) + 1 : 1;
+
+      await tx.routeStudent.update({
+        where: { id: routeStudent.id },
+        data: {
+          route_id: new_route_id,
+          pickup_order: nextOrder,
+          ...(monthly_fee !== undefined ? { monthly_fee } : {})
+        }
+      });
+
+      // Remove from twin route of old route
+      await tx.routeStudent.deleteMany({
+        where: {
+          student_id: studentId,
+          route: twinWhere(req.user.id, route)
+        }
+      });
+    } else if (monthly_fee !== undefined) {
+      await tx.routeStudent.update({
+        where: { id: routeStudent.id },
+        data: { monthly_fee }
+      });
+    }
+
+    if (monthly_fee !== undefined) {
+      await tx.routeStudent.updateMany({
+        where: {
+          student_id: studentId,
+          route: twinWhere(req.user.id, targetRoute)
+        },
+        data: { monthly_fee }
+      });
+    }
+
+    const updatedStudent = await tx.student.findUnique({
+      where: { id: studentId }
+    });
+
+    const updatedRouteStudent = await tx.routeStudent.findFirst({
+      where: { route_id: targetRouteId, student_id: studentId }
+    });
+
+    return {
+      student: updatedStudent,
+      monthly_fee: Number(updatedRouteStudent.monthly_fee),
+      route: {
+        id: targetRoute.id,
+        name: targetRoute.name
+      }
+    };
+  });
+
+  try {
+    await ensureTwinRoutes(req.user.id);
+  } catch (err) {
+    console.error('[ensureTwinRoutes] failed after student update', err);
+  }
+
+  res.json(result);
 });
 
 // PATCH /driver/routes/:routeId { name?, start_time?, end_time?, direction? }

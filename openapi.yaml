@@ -474,6 +474,84 @@ paths:
         '409':
           description: Student already in active route
 
+  /driver/routes/{routeId}/students/{studentId}:
+    patch:
+      summary: Update Student on Route
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: studentId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                monthly_fee:
+                  type: number
+                  example: 18000
+                pickup_location:
+                  type: string
+                  example: 742 Evergreen Terrace
+                new_route_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Student updated
+        '400':
+          description: Validation error
+        '403':
+          description: Forbidden
+        '404':
+          description: Route or student not found
+        '409':
+          description: Route conflict
+
+    delete:
+      summary: Remove Student from Route
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: studentId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Student removed from route
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  warning:
+                    type: string
+        '403':
+          description: Forbidden
+        '404':
+          description: Route or student not found
+
   /driver/pickup/{studentId}:
     patch:
       summary: Update Pickup Status

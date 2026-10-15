@@ -327,6 +327,10 @@ If an API request fails, the server responds with an appropriate HTTP status cod
             "student": {
               "id": "student-uuid-1",
               "name": "Little Jane",
+              "grade": "1",
+              "section": "A",
+              "pickup_location": "123 Main St",
+              "monthly_fee": 15000,
               "pickup_status": [
                 {
                   "id": "pickup-uuid-1",
@@ -504,13 +508,84 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   }
   ```
 
-#### 13. Remove Student from Route
+#### 13. Remove Student from Route (Unassign)
 
 - **Method**: `DELETE`
 - **Endpoint**: `/driver/routes/:routeId/students/:studentId`
 - **Parameters**:
   - `:routeId` (Path) - The UUID of the route.
   - `:studentId` (Path) - The UUID of the student.
+- **Description**: Unassigns a student from the specified route (and its twin route if present). This only removes the route-student assignment link. It does **not** delete the student record, parent account, or past fee/payment/pickup history.
+- **Rules**:
+  - Route must belong to the authenticated driver (`404` if route not found, `403` if route belongs to another driver).
+  - Student must be assigned to the route (`404` if not found on route).
+  - If the student has unpaid fees (`status: "DUE"` with amount > 0), removal is still permitted, but a `warning` field is returned in the response. Unpaid fees are never deleted.
+- **Success Response (200 OK - No Unpaid Fees)**:
+  ```json
+  {
+    "success": true
+  }
+  ```
+- **Success Response (200 OK - Unpaid Fees Present)**:
+  ```json
+  {
+    "success": true,
+    "warning": "Student has unpaid fees"
+  }
+  ```
+- **Error Responses**:
+  - `401 Unauthorized` (`code: "AUTH_REQUIRED"` / `"INVALID_TOKEN"`)
+  - `403 Forbidden` (`code: "FORBIDDEN"`): If authenticated user is not a driver or route belongs to another driver.
+  - `404 Not Found` (`code: "NOT_FOUND"`): If route does not exist or student is not on the route.
+
+#### 13b. Update Student on Route
+
+- **Method**: `PATCH`
+- **Endpoint**: `/driver/routes/:routeId/students/:studentId`
+- **Parameters**:
+  - `:routeId` (Path) - The UUID of the current route.
+  - `:studentId` (Path) - The UUID of the student.
+- **Description**: Modifies the student's route assignment, monthly fee, or pickup location.
+- **Body** (All optional, at least one required):
+  ```json
+  {
+    "monthly_fee": 18000,
+    "pickup_location": "742 Evergreen Terrace",
+    "new_route_id": "c1f7b845-82f2-47f4-aa91-9ca04e5030c8"
+  }
+  ```
+- **Validation & Rules**:
+  - `monthly_fee`: Optional positive number (`> 0`). Changing monthly fee applies to future fee generation and future trip calculations only. Never modifies `PAID` fees.
+  - `pickup_location`: Optional string, trimmed, max 255 characters. Updates the student's pickup location in the database.
+  - `new_route_id`: Optional UUID. Must be an active route owned by the same driver and cannot be `COMPLETED` or `ARCHIVED`. Moves the student to the new route in a transaction while keeping the student record.
+  - At least one of `monthly_fee`, `pickup_location`, or `new_route_id` must be provided.
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "student": {
+      "id": "e5b8c3d2-a1f4-4b8c-9d3e-1f2a3b4c5d6e",
+      "parent_id": "p1a2b3c4-d5e6-7f8a-9b0c-1d2e3f4a5b6c",
+      "name": "Little Jane",
+      "grade": "1",
+      "section": "A",
+      "school_name": "Springfield Elementary",
+      "pickup_location": "742 Evergreen Terrace",
+      "student_code": "STU-12345",
+      "created_at": "2026-09-01T04:26:50.000Z"
+    },
+    "monthly_fee": 18000,
+    "route": {
+      "id": "c1f7b845-82f2-47f4-aa91-9ca04e5030c8",
+      "name": "Morning Pickup"
+    }
+  }
+  ```
+- **Error Responses**:
+  - `400 Bad Request` (`code: "VALIDATION_ERROR"`): If validation fails (e.g., empty body, fee <= 0, location > 255 chars, or new route is completed/archived).
+  - `401 Unauthorized` (`code: "AUTH_REQUIRED"` / `"INVALID_TOKEN"`)
+  - `403 Forbidden` (`code: "FORBIDDEN"`): If route or new route belongs to another driver.
+  - `404 Not Found` (`code: "NOT_FOUND"`): If route, new route, or student assignment is not found.
+  - `409 Conflict` (`code: "CONFLICT"`): If student is already assigned to `new_route_id` or an active route in that direction.
 
 #### 14. Get Driver Notifications
 

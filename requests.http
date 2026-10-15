@@ -277,9 +277,20 @@ Authorization: Bearer {{driverToken}}
   "year": 2026
 }
 
-### Remove Student from Route
+### Remove Student from Route (Unassign)
 DELETE {{baseUrl}}/driver/routes/{{routeId}}/students/{{studentId}}
 Authorization: Bearer {{driverToken}}
+
+### Update Student on Route (Fee, Location, or Move Route)
+PATCH {{baseUrl}}/driver/routes/{{routeId}}/students/{{studentId}}
+Content-Type: application/json
+Authorization: Bearer {{driverToken}}
+
+{
+  "monthly_fee": 16000.00,
+  "pickup_location": "123 New Pickup Point",
+  "new_route_id": "{{eveningRouteId}}"
+}
 
 ### Get Pickup History
 GET {{baseUrl}}/driver/history?date=2026-09-25&page=1&limit=50
