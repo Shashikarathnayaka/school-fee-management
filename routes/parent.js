@@ -4,6 +4,7 @@ const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { generateToken } = require('../utils/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
+const { feeWindowWhere } = require('../utils/feeCleanup');
 const { slToday, slMonthYear } = require('../utils/slDate');
 const { getOrCreateOpenFee } = require('../utils/pickupEngine');
 
@@ -129,7 +130,8 @@ router.get('/fees', async (req, res) => {
 
   const fees = await prisma.fee.findMany({
     where: {
-      student: { parent_id: req.user.id }
+      student: { parent_id: req.user.id },
+      ...feeWindowWhere()
     },
     include: {
       student: { select: { name: true, student_code: true } }

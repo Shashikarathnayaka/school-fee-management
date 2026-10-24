@@ -3,6 +3,7 @@ const { z } = require('zod');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('../middlewares/auth');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
+const { feeWindowWhere } = require('../utils/feeCleanup');
 const { slToday, slDateString, slMonthYear, currentPeriod, activeDirection, isRouteLiveNow, formatSLTime } = require('../utils/slDate');
 const { applyPickupStatus, getOrCreateOpenFee, ensureTwinRoutes, twinWhere } = require('../utils/pickupEngine');
 
@@ -1073,7 +1074,10 @@ router.get('/students/:studentId/fees', async (req, res) => {
   await ensureMonthlyFees({ studentIds: [studentId] });
 
   const fees = await prisma.fee.findMany({
-    where: { student_id: studentId },
+    where: {
+      student_id: studentId,
+      ...feeWindowWhere()
+    },
     select: {
       id: true,
       amount: true,

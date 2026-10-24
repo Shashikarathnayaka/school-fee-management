@@ -284,6 +284,7 @@ paths:
   /parent/fees:
     get:
       summary: Get All Fees
+      description: Returns fee records for all of the parent's children within the rolling 12-month window (current month + previous 11 months, Asia/Colombo timezone). Fees older than this window are never returned.
       tags: [Parent]
       security:
         - bearerAuth: []
@@ -629,3 +630,101 @@ paths:
                     type: boolean
                   deleted:
                     type: integer
+
+  /driver/students/{studentId}/fees:
+    get:
+      summary: Get Student Fee Payment Status
+      description: Returns fee records for a specific student within the rolling 12-month window (current month + previous 11 months, Asia/Colombo timezone). Fees older than this window are never returned. The driver must own a route the student is assigned to.
+      tags: [Driver]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: studentId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fees:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        amount:
+                          type: string
+                        due_date:
+                          type: string
+                          format: date-time
+                        month:
+                          type: integer
+                          minimum: 1
+                          maximum: 12
+                        year:
+                          type: integer
+                        status:
+                          type: string
+                          enum: [DUE, PAID]
+                        paid_date:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        trips_count:
+                          type: integer
+                        trips_total:
+                          type: integer
+                        per_trip_amount:
+                          type: number
+                          nullable: true
+        '404':
+          description: Student not found on any of driver's routes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /cron/generate-fees:
+    get:
+      summary: Scheduled Monthly Fee Generation and Cleanup
+      description: |
+        Intended for automated execution (Vercel Cron, `0 0 1 * *`).
+        1. Generates monthly fee records for all active students for the current month and year.
+        2. Purges fee records older than the rolling 12-month window (current month + 11 previous months, Asia/Colombo timezone). Trip charges for deleted fees are automatically removed via cascade.
+      tags: [Cron]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  created:
+                    type: integer
+                    description: Number of new fee records generated for the current month.
+                    example: 5
+                  deleted:
+                    type: integer
+                    description: Number of fee records removed as they fell outside the 12-month window.
+                    example: 3
+        '401':
+          description: Unauthorized – CRON_SECRET missing or mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'

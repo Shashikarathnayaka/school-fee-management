@@ -1,5 +1,6 @@
 const express = require('express');
 const { ensureMonthlyFees } = require('../utils/feeGenerator');
+const { deleteOldFees } = require('../utils/feeCleanup');
 
 const router = express.Router();
 
@@ -19,7 +20,8 @@ router.get('/generate-fees', async (req, res) => {
   }
 
   const result = await ensureMonthlyFees();
-  res.json({ success: true, created: result.created });
+  const cleanup = await deleteOldFees();
+  res.json({ success: true, created: result.created, deleted: cleanup.deleted });
 });
 
 module.exports = router;

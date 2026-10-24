@@ -194,7 +194,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 
 - **Method**: `GET`
 - **Endpoint**: `/parent/fees`
-- **Description**: Returns all pending and paid fees for all children belonging to the parent. Automatically ensures that current month fees are generated for children on active routes.
+- **Description**: Returns pending and paid fees for all children belonging to the parent. Automatically ensures that current month fees are generated for children on active routes. **Only fees within the rolling 12-month window are returned** (current month + 11 previous months in Asia/Colombo timezone); fees older than this window are never shown.
 - **Success Response (200 OK)**: Returns the list of fees including:
   - `id`: Fee UUID
   - `amount`: Current calculated fee amount (capped at `monthly_fee`)
@@ -308,6 +308,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Endpoint**: `/driver/routes/today`
 - **Description**: Retrieves all non-ARCHIVED routes for the driver, sorted with `HOME_TO_SCHOOL` routes first. Each student's `pickup_status` contains only the status record for that specific route and today's date in Sri Lanka time (preventing status bleed across morning and evening routes). Also exposes `monthly_fee` and `per_trip_amount` (`monthly_fee / 40`).
 - **Success Response (200 OK)**:
+
   ```json
   {
     "routes": [
@@ -354,6 +355,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Endpoint**: `/driver/students/by-code/:code`
 - **Description**: Pre-checks student information before adding them to a route. Returns the student details, any existing monthly fee with this driver (from an active route of the other direction), and existing route details.
 - **Success Response (200 OK)**:
+
   ```json
   {
     "student": {
@@ -372,6 +374,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
     }
   }
   ```
+
 - **Error Responses**:
   - `404 Not Found`: If student code does not exist (`code: "STUDENT_NOT_FOUND"`).
 
@@ -401,6 +404,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Endpoint**: `/driver/routes/:routeId`
 - **Parameters**: `:routeId` (Path) - The UUID of the route.
 - **Body** (All fields optional):
+
   ```json
   {
     "name": "Updated Morning Route",
@@ -409,6 +413,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
     "direction": "HOME_TO_SCHOOL"
   }
   ```
+
 - **Description**: Updates route details. If `direction` is changed:
   - Blocked with `409 Conflict` (`code: "ROUTE_HAS_HISTORY"`) if the route has any `pickup_status` rows.
   - Blocked with `409 Conflict` (`code: "CONFLICT"`) if any assigned student would end up with two active routes of the same direction.
@@ -448,6 +453,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
       (pickup for `HOME_TO_SCHOOL`, drop-off for `SCHOOL_TO_HOME`).
     - Idempotent: Skips a parent if the same `"Driver on the way"` notification for this route was already sent today (Asia/Colombo).
 - **Success Response (200 OK)**:
+
   ```json
   {
     "route": {
@@ -460,6 +466,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
     "skipped": 0
   }
   ```
+
 - **Error Responses**:
   - `404 Not Found` (`code: "NOT_FOUND"`): Route not found.
   - `409 Conflict` (`code: "INVALID_STATE"`): Route is archived or completed.
@@ -499,7 +506,9 @@ If an API request fails, the server responds with an appropriate HTTP status cod
     "routeId": "uuid-of-the-route"
   }
   ```
+
 - **Success Response (200 OK)**:
+
   ```json
   {
     "pickup": { "id": "...", "status": "DROPPED", "pickup_method": "MANUAL", ... },
@@ -521,18 +530,22 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - Student must be assigned to the route (`404` if not found on route).
   - If the student has unpaid fees (`status: "DUE"` with amount > 0), removal is still permitted, but a `warning` field is returned in the response. Unpaid fees are never deleted.
 - **Success Response (200 OK - No Unpaid Fees)**:
+
   ```json
   {
     "success": true
   }
   ```
+
 - **Success Response (200 OK - Unpaid Fees Present)**:
+
   ```json
   {
     "success": true,
     "warning": "Student has unpaid fees"
   }
   ```
+
 - **Error Responses**:
   - `401 Unauthorized` (`code: "AUTH_REQUIRED"` / `"INVALID_TOKEN"`)
   - `403 Forbidden` (`code: "FORBIDDEN"`): If authenticated user is not a driver or route belongs to another driver.
@@ -547,6 +560,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - `:studentId` (Path) - The UUID of the student.
 - **Description**: Modifies the student's route assignment, monthly fee, or pickup location.
 - **Body** (All optional, at least one required):
+
   ```json
   {
     "monthly_fee": 18000,
@@ -554,12 +568,14 @@ If an API request fails, the server responds with an appropriate HTTP status cod
     "new_route_id": "c1f7b845-82f2-47f4-aa91-9ca04e5030c8"
   }
   ```
+
 - **Validation & Rules**:
   - `monthly_fee`: Optional positive number (`> 0`). Changing monthly fee applies to future fee generation and future trip calculations only. Never modifies `PAID` fees.
   - `pickup_location`: Optional string, trimmed, max 255 characters. Updates the student's pickup location in the database.
   - `new_route_id`: Optional UUID. Must be an active route owned by the same driver and cannot be `COMPLETED` or `ARCHIVED`. Moves the student to the new route in a transaction while keeping the student record.
   - At least one of `monthly_fee`, `pickup_location`, or `new_route_id` must be provided.
 - **Success Response (200 OK)**:
+
   ```json
   {
     "student": {
@@ -580,6 +596,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
     }
   }
   ```
+
 - **Error Responses**:
   - `400 Bad Request` (`code: "VALIDATION_ERROR"`): If validation fails (e.g., empty body, fee <= 0, location > 255 chars, or new route is completed/archived).
   - `401 Unauthorized` (`code: "AUTH_REQUIRED"` / `"INVALID_TOKEN"`)
@@ -661,7 +678,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Method**: `GET`
 - **Endpoint**: `/driver/students/:studentId/fees`
 - **Parameters**: `:studentId` (Path) - The UUID of the student.
-- **Description**: Returns all fee records for a specific student. The driver
+- **Description**: Returns fee records for a specific student within the rolling 12-month window (current month + 11 previous months, Asia/Colombo timezone). Fees older than this window are never returned. The driver
   must own a route the student is assigned to; otherwise `404` is returned.
   This prevents drivers from viewing fee data for students outside their routes.
 - **Error Responses**:
@@ -712,13 +729,16 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   - Body: `"{student}'s transport fee for {MonthName} {year} is Rs. {amount} ({trips_count} trips). Please pay your driver."`
   - Deduplication: Skips if the same user, title, and body was already created today in Sri Lanka time.
 - **Request Body (JSON, Optional)**:
+
   ```json
   {
     "month": 10,  // Optional: integer 1-12. Defaults to current SL month.
     "year": 2026   // Optional: integer. Defaults to current SL year.
   }
   ```
+
 - **Success Response (200 OK)**:
+
   ```json
   {
     "sent": 3,
@@ -738,17 +758,20 @@ All admin endpoints require an authenticated user with the `ADMIN` role (`Author
 - **Endpoint**: `/admin/fees/generate`
 - **Description**: Generates monthly fee records for all students assigned to active (non-completed) routes. Safe to invoke repeatedly (idempotent, skips existing fees for the specified student, month, and year).
 - **Request Body (JSON, Optional)**:
+
   ```json
   {
     "month": 10,  // Optional: integer 1-12. Defaults to current month.
     "year": 2026   // Optional: integer (e.g., 2026). Defaults to current year.
   }
   ```
+
 - **Error Responses**:
   - `400 Bad Request`: If month or year is out of valid range.
   - `401 Unauthorized`: If unauthenticated.
   - `403 Forbidden`: If user role is not `ADMIN`.
 - **Success Response (200 OK)**:
+
   ```json
   {
     "created": 5
@@ -769,6 +792,7 @@ All admin endpoints require an authenticated user with the `ADMIN` role (`Author
 - **Endpoint**: `/admin/pickups/:id/mark`
 - **Description**: Admin manual override for pickup status.
 - **Body**:
+
   ```json
   {
     "status": "DROPPED", // "PICKED_UP" | "DROPPED" | "ABSENT" | "PENDING"
@@ -782,12 +806,14 @@ All admin endpoints require an authenticated user with the `ADMIN` role (`Author
 - **Endpoint**: `/admin/pickups/ticket`
 - **Description**: Mark a student as `PICKED_UP` using student code and route ID.
 - **Body**:
+
   ```json
   {
     "student_code": "STU-12345",
     "route_id": "uuid"
   }
   ```
+
 - **Success Response**: `200 OK` if already pending and updated, `201 Created` if new row created.
 
 ---
@@ -798,16 +824,20 @@ All admin endpoints require an authenticated user with the `ADMIN` role (`Author
 
 - **Method**: `GET`
 - **Endpoint**: `/cron/generate-fees`
-- **Description**: Intended for automated execution (e.g. Vercel Cron on the 1st of every month at midnight `0 0 1 * *`). Generates monthly fee records for all active students for the current month and year.
+- **Description**: Intended for automated execution (e.g. Vercel Cron on the 1st of every month at midnight `0 0 1 * *`). Generates monthly fee records for all active students for the current month and year. After generating fees it also **purges fee records older than the rolling 12-month window** (current month + 11 previous months, Asia/Colombo timezone). Trip charges for deleted fees are automatically removed via cascade.
 - **Authentication**: Protected by a static bearer token matching the server's `CRON_SECRET` environment variable:
   - Header: `Authorization: Bearer <CRON_SECRET>`
 - **Error Responses**:
   - `401 Unauthorized`: If `CRON_SECRET` is missing, or header does not match `Bearer <CRON_SECRET>`.
 - **Success Response (200 OK)**:
+
   ```json
   {
     "success": true,
-    "created": 5
+    "created": 5,
+    "deleted": 3
   }
   ```
 
+  - `created`: number of new fee records generated for the current month.
+  - `deleted`: number of fee records removed as they fell outside the 12-month window.
