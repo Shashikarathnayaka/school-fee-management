@@ -346,6 +346,10 @@ router.delete('/routes/:routeId/students/:studentId', async (req, res) => {
     return res.status(403).json({ error: { message: 'Forbidden: Route does not belong to driver', code: 'FORBIDDEN' } });
   }
 
+  if (route.status === 'COMPLETED' || route.status === 'ARCHIVED') {
+    return res.status(400).json({ error: { message: 'Cannot modify students of a completed or archived route', code: 'VALIDATION_ERROR' } });
+  }
+
   const routeStudent = await prisma.routeStudent.findFirst({
     where: { route_id: routeId, student_id: studentId }
   });
@@ -362,15 +366,15 @@ router.delete('/routes/:routeId/students/:studentId', async (req, res) => {
     }
   });
 
-  // Remove student from route (unassign only - preserves Student, fees, pickups, etc.)
-  await prisma.routeStudent.deleteMany({
-    where: { route_id: routeId, student_id: studentId }
-  });
-
-  // Also remove the student from the twin route (if any)
-  await prisma.routeStudent.deleteMany({
-    where: { student_id: studentId, route: twinWhere(req.user.id, route) }
-  });
+  // Remove student from route and twin route (unassign only - preserves Student, fees, pickups, etc.)
+  await prisma.$transaction([
+    prisma.routeStudent.deleteMany({
+      where: { route_id: routeId, student_id: studentId }
+    }),
+    prisma.routeStudent.deleteMany({
+      where: { student_id: studentId, route: twinWhere(req.user.id, route) }
+    })
+  ]);
 
   const response = { success: true };
   if (unpaidFee) {
@@ -403,6 +407,9 @@ router.patch('/routes/:routeId/students/:studentId', async (req, res) => {
   if (route.driver_id !== req.user.id) {
     return res.status(403).json({ error: { message: 'Forbidden: Route does not belong to driver', code: 'FORBIDDEN' } });
   }
+  if (route.status === 'COMPLETED' || route.status === 'ARCHIVED') {
+    return res.status(400).json({ error: { message: 'Cannot modify students of a completed or archived route', code: 'VALIDATION_ERROR' } });
+  }
 
   // 2. Verify student is assigned to this route
   const routeStudent = await prisma.routeStudent.findFirst({
@@ -426,6 +433,9 @@ router.patch('/routes/:routeId/students/:studentId', async (req, res) => {
     }
     if (newRoute.status === 'COMPLETED' || newRoute.status === 'ARCHIVED') {
       return res.status(400).json({ error: { message: 'New route cannot be completed or archived', code: 'VALIDATION_ERROR' } });
+    }
+    if (newRoute.name === route.name && newRoute.direction !== route.direction) {
+      return res.status(409).json({ error: { message: 'Cannot move a student to the twin of the same route', code: 'CONFLICT' } });
     }
 
     if (new_route_id !== routeId) {
@@ -504,6 +514,8 @@ router.patch('/routes/:routeId/students/:studentId', async (req, res) => {
       });
     }
 
+    // When monthly_fee is provided, the new fee only affects future trips
+    // (existing TripCharge rows keep their amount and syncFee is only run on pickup changes).
     if (monthly_fee !== undefined) {
       await tx.routeStudent.updateMany({
         where: {
@@ -521,6 +533,9 @@ router.patch('/routes/:routeId/students/:studentId', async (req, res) => {
     const updatedRouteStudent = await tx.routeStudent.findFirst({
       where: { route_id: targetRouteId, student_id: studentId }
     });
+    if (!updatedRouteStudent) {
+      throw new Error('RouteStudent not found after update');
+    }
 
     return {
       student: updatedStudent,

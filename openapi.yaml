@@ -512,13 +512,13 @@ paths:
         '200':
           description: Student updated
         '400':
-          description: Validation error
+          description: Validation error or completed/archived route
         '403':
           description: Forbidden
         '404':
           description: Route or student not found
         '409':
-          description: Route conflict
+          description: Route conflict or cannot move to twin route
 
     delete:
       summary: Remove Student from Route
@@ -548,6 +548,8 @@ paths:
                     type: boolean
                   warning:
                     type: string
+        '400':
+          description: Route is completed or archived
         '403':
           description: Forbidden
         '404':

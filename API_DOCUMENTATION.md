@@ -527,6 +527,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
 - **Description**: Unassigns a student from the specified route (and its twin route if present). This only removes the route-student assignment link. It does **not** delete the student record, parent account, or past fee/payment/pickup history.
 - **Rules**:
   - Route must belong to the authenticated driver (`404` if route not found, `403` if route belongs to another driver).
+  - Route cannot be completed or archived (`400` if status is `COMPLETED` or `ARCHIVED`).
   - Student must be assigned to the route (`404` if not found on route).
   - If the student has unpaid fees (`status: "DUE"` with amount > 0), removal is still permitted, but a `warning` field is returned in the response. Unpaid fees are never deleted.
 - **Success Response (200 OK - No Unpaid Fees)**:
@@ -547,6 +548,7 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 - **Error Responses**:
+  - `400 Bad Request` (`code: "VALIDATION_ERROR"`): If route is completed or archived.
   - `401 Unauthorized` (`code: "AUTH_REQUIRED"` / `"INVALID_TOKEN"`)
   - `403 Forbidden` (`code: "FORBIDDEN"`): If authenticated user is not a driver or route belongs to another driver.
   - `404 Not Found` (`code: "NOT_FOUND"`): If route does not exist or student is not on the route.
@@ -570,9 +572,10 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 - **Validation & Rules**:
+  - Route cannot be completed or archived (`400` if status is `COMPLETED` or `ARCHIVED`).
   - `monthly_fee`: Optional positive number (`> 0`). Changing monthly fee applies to future fee generation and future trip calculations only. Never modifies `PAID` fees.
   - `pickup_location`: Optional string, trimmed, max 255 characters. Updates the student's pickup location in the database.
-  - `new_route_id`: Optional UUID. Must be an active route owned by the same driver and cannot be `COMPLETED` or `ARCHIVED`. Moves the student to the new route in a transaction while keeping the student record.
+  - `new_route_id`: Optional UUID. Must be an active route owned by the same driver and cannot be `COMPLETED` or `ARCHIVED`. Cannot move a student to the twin of the same route (same name, opposite direction). Moves the student to the new route in a transaction while keeping the student record.
   - At least one of `monthly_fee`, `pickup_location`, or `new_route_id` must be provided.
 - **Success Response (200 OK)**:
 
@@ -598,11 +601,11 @@ If an API request fails, the server responds with an appropriate HTTP status cod
   ```
 
 - **Error Responses**:
-  - `400 Bad Request` (`code: "VALIDATION_ERROR"`): If validation fails (e.g., empty body, fee <= 0, location > 255 chars, or new route is completed/archived).
+  - `400 Bad Request` (`code: "VALIDATION_ERROR"`): If validation fails (e.g., empty body, fee <= 0, location > 255 chars, or route/new route is completed or archived).
   - `401 Unauthorized` (`code: "AUTH_REQUIRED"` / `"INVALID_TOKEN"`)
   - `403 Forbidden` (`code: "FORBIDDEN"`): If route or new route belongs to another driver.
   - `404 Not Found` (`code: "NOT_FOUND"`): If route, new route, or student assignment is not found.
-  - `409 Conflict` (`code: "CONFLICT"`): If student is already assigned to `new_route_id` or an active route in that direction.
+  - `409 Conflict` (`code: "CONFLICT"`): If student is already assigned to `new_route_id`, target route is the twin of the same route, or student is already assigned to an active route in that direction.
 
 #### 14. Get Driver Notifications
 
